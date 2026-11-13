@@ -1559,7 +1559,9 @@ window.openClusterMember = function(repId, memberId, url) {
     // Engagement credits the source actually clicked, not the representative.
     recordInteraction(member.source, 'open');
   }
-  window.open(url, '_blank');
+  // Only real web links: a javascript:/data: URL opened here would run with
+  // this page's origin (window.open gives the new tab our origin).
+  if (safeUrl(url) !== '#') window.open(safeUrl(url), '_blank', 'noopener');
   // Opening any coverage marks the whole story read and removes the card.
   dismiss(repId, true);
   updateBadges();
@@ -1600,7 +1602,9 @@ function openArticle(id, url) {
     saveSharedState().catch(() => {});
   }
 
-  window.open(url, '_blank');
+  // Only real web links: a javascript:/data: URL opened here would run with
+  // this page's origin (window.open gives the new tab our origin).
+  if (safeUrl(url) !== '#') window.open(safeUrl(url), '_blank', 'noopener');
   // Pass internal=true so dismiss doesn't double-count this as a dismiss —
   // an open is positive signal, dismiss is the cleanup that follows.
   dismiss(id, true);
