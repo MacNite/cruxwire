@@ -50,6 +50,7 @@ authenticated reverse proxy; with accounts, still terminate TLS in a proxy.
 """
 import concurrent.futures
 import json
+import math
 import os
 import re
 import tempfile
@@ -337,9 +338,10 @@ def _normalize_source_stats(raw):
         coerced = {}
         for key in ('opens', 'saves', 'dismisses'):
             try:
-                coerced[key] = float(counters.get(key, 0) or 0)
+                val = float(counters.get(key, 0) or 0)
             except (TypeError, ValueError):
-                coerced[key] = 0.0
+                val = 0.0
+            coerced[key] = val if math.isfinite(val) else 0.0
         out[source] = coerced
     return out
 
@@ -351,6 +353,20 @@ def _normalize_learning(raw):
     return {'lastDecayAt': last if isinstance(last, str) else None}
 
 
+def _as_list(v):
+    """A JSON list as-is; anything else (string, number, object) as []."""
+    return v if isinstance(v, list) else []
+
+
+def _valid_saved_item(item):
+    """A Read Later / History entry: an object whose id/url/title/source are
+    strings when present (they are rendered and compared as strings)."""
+    if not isinstance(item, dict) or not isinstance(item.get('id'), str):
+        return False
+    return all(item.get(k) is None or isinstance(item.get(k), str)
+               for k in ('url', 'title', 'source', 'category', 'savedAt', 'viewedAt'))
+
+
 def normalize_payload(payload):
     """Coerce incoming PUT into the expected shape; ignore unknown fields."""
     vs_default = DEFAULT_STATE['viewState']
@@ -358,10 +374,10 @@ def normalize_payload(payload):
     view_state = {**vs_default, **{k: raw_vs[k] for k in vs_default if k in raw_vs}}
 
     return {
-        'updatedAt': payload.get('updatedAt') or None,
-        'readIds': list(payload.get('readIds') or []),
-        'later': list(payload.get('later') or []),
-        'history': list(payload.get('history') or []),
+        'updatedAt': payload.get('updatedAt') if isinstance(payload.get('updatedAt'), str) else None,
+        'readIds': _as_list(payload.get('readIds')),
+        'later': [i for i in _as_list(payload.get('later')) if _valid_saved_item(i)],
+        'history': [i for i in _as_list(payload.get('history')) if _valid_saved_item(i)],
         'viewState': view_state,
         'sourceStats': _normalize_source_stats(payload.get('sourceStats')),
         'learning': _normalize_learning(payload.get('learning')),
@@ -1154,8 +1170,16 @@ class StateHandler(BaseHTTPRequestHandler):
             print(f'account store error: {exc}', flush=True)
             self._json(503, {'error': 'Account storage is unavailable. An administrator must '
                                       'restore users.json (see the server log).'})
-        except BrokenPipeError:
+        except (BrokenPipeError, ConnectionResetError):
             pass
+        except Exception as exc:
+            # A malformed request (or a bug) must yield an error response, not
+            # a dropped connection with a traceback on stderr.
+            print(f'{method} {self.path[:200]} failed: {type(exc).__name__}: {exc}', flush=True)
+            try:
+                self._json(500, {'error': 'Internal error'})
+            except OSError:
+                pass
 
     def do_GET(self):
         self._dispatch('GET')
