@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Byte-compile the Python modules
-        run: python -m py_compile server.py pipeline.py settings.py corpus_archive.py preferences.py onboarding.py images.py netsafe.py users.py
+        run: python -m py_compile server.py pipeline.py settings.py corpus_archive.py preferences.py onboarding.py images.py netsafe.py users.py oidc.py
       - name: Validate the seed JSON
         run: |
           python - <<'PY'

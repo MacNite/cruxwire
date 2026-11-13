@@ -4454,7 +4454,11 @@ function renderAccountPane(pane) {
         Your feeds, categories, likes, reading history and personal ranking settings are private to this account.</div>
       <div class="cfg-actions"><button class="feed-btn" onclick="logout()">Sign out</button></div>
     </div>
-    <div class="settings-section">
+    ${u.sso && !u.has_password ? `<div class="settings-section">
+      <div class="settings-h">Password</div>
+      <div class="settings-help">You sign in with single sign-on, so your password is managed by your identity provider.</div>
+    </div>` : ''}
+    <div class="settings-section"${u.sso && !u.has_password ? ' hidden' : ''}>
       <div class="settings-h">Change password</div>
       <div class="cfg-grid">
         <div class="cfg-row"><label class="cfg-label" for="pw-current">Current password</label>
@@ -4505,13 +4509,14 @@ async function renderUsersPane(pane) {
     const self = u.id === me;
     return `<tr>
       <td class="feed-cell-name">${escapeHtml(u.display_name || u.username)}
-        <div style="font-size:12px;color:var(--text3)">${escapeHtml(u.username)}${u.legacy ? ' · owner' : ''}${self ? ' · you' : ''}</div></td>
+        <div style="font-size:12px;color:var(--text3)">${escapeHtml(u.username)}${u.legacy ? ' · owner' : ''}${u.sso ? ' · SSO' : ''}${self ? ' · you' : ''}</div></td>
       <td><select class="feed-select" ${self ? 'disabled' : ''} onchange="updateUser('${u.id}', { role: this.value })">
         <option value="user"${u.role === 'user' ? ' selected' : ''}>User</option>
         <option value="admin"${u.role === 'admin' ? ' selected' : ''}>Admin</option></select></td>
       <td style="color:var(--text2);font-size:12px">${u.disabled ? 'Disabled' : (u.last_login_at ? 'Last sign-in ' + escapeHtml(u.last_login_at.slice(0, 10)) : 'Never signed in')}</td>
       <td style="white-space:nowrap;text-align:right">
-        <button class="feed-btn" onclick="resetUserPassword('${u.id}', '${escapeAttr(u.username)}')">Reset password</button>
+        <button class="feed-btn" onclick="resetUserPassword('${u.id}', '${escapeAttr(u.username)}')">${u.has_password ? 'Reset password' : 'Set password'}</button>
+        ${u.sso ? `<button class="feed-btn" title="The next SSO sign-in creates or links an account again" onclick="unlinkSso('${u.id}', '${escapeAttr(u.username)}')">Unlink SSO</button>` : ''}
         ${self ? '' : `<button class="feed-btn" onclick="updateUser('${u.id}', { disabled: ${!u.disabled} })">${u.disabled ? 'Enable' : 'Disable'}</button>`}
         ${self || u.legacy ? '' : `<button class="feed-btn" onclick="deleteUser('${u.id}', '${escapeAttr(u.username)}')">Delete</button>`}
       </td></tr>`;
@@ -4582,6 +4587,11 @@ window.resetUserPassword = async function(id, username) {
   const pw = prompt(`New password for ${username} (at least 8 characters). Their other sessions will be signed out.`);
   if (!pw) return;
   await updateUser(id, { password: pw });
+};
+
+window.unlinkSso = async function(id, username) {
+  if (!confirm(`Unlink ${username} from single sign-on? Their next SSO sign-in will not reach this account unless it is linked again.`)) return;
+  await updateUser(id, { unlink_sso: true });
 };
 
 window.deleteUser = async function(id, username) {

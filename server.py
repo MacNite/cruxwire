@@ -18,12 +18,14 @@ Endpoints:
   GET  /status                live pipeline status (running/phase/last run)
   POST /refresh               trigger a pipeline run now (202 started / 409 running / 429 cooldown)
 
-Accounts (AUTH_MODE=local; see users.py):
+Accounts (AUTH_MODE=local|oidc; see users.py):
   GET  /login                 sign-in / first-admin setup page
   GET  /auth/me               {mode, user|null, needsSetup}
   POST /auth/login /auth/logout /auth/setup     session cookie in / out; one-time admin setup
   PUT  /auth/password         change own password {current, new}
-  GET|POST|PUT|DELETE /users  admin user management (?id=)
+  GET|POST|PUT|DELETE /users  admin user management (?id=; PUT {unlink_sso:true})
+  GET  /auth/oidc/login       start OpenID Connect sign-in (?next=/path); see oidc.py
+  GET  /auth/oidc/callback    provider redirect target: verifies, signs in, redirects
   Every other endpoint acts on the signed-in user's own data (401 when signed out).
 
 Personalization / onboarding:
@@ -58,9 +60,10 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlencode, urlparse, parse_qs
 
 import images
+import oidc
 import onboarding
 import pipeline
 import preferences
@@ -769,20 +772,81 @@ class StateHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _redirect(self, location):
+    def _redirect(self, location, cookies=()):
         self.send_response(302)
         self.send_header('Location', location)
         self.send_header('Cache-Control', 'no-store')
         self.send_header('Content-Length', '0')
+        for c in cookies:
+            self.send_header('Set-Cookie', c)
         self._security_headers()
         self.end_headers()
+
+    def _cookie_value(self, name):
+        raw = self.headers.get('Cookie')
+        if not raw:
+            return None
+        try:
+            c = SimpleCookie()
+            c.load(raw)
+        except Exception:
+            return None
+        m = c.get(name)
+        return m.value if m else None
+
+    def _request_base(self):
+        """scheme://host this request reached us on (reverse-proxy aware)."""
+        proto = (self.headers.get('X-Forwarded-Proto') or 'http').split(',')[0].strip().lower()
+        host = (self.headers.get('X-Forwarded-Host') or self.headers.get('Host') or '').split(',')[0].strip()
+        return f"{'https' if proto == 'https' else 'http'}://{host}"
+
+    def _oidc_state_cookie(self, value, max_age):
+        # Lax is enough: the IdP returns with a top-level GET navigation.
+        parts = [f'{oidc.STATE_COOKIE}={value}', 'Path=/auth/oidc', 'HttpOnly', 'SameSite=Lax',
+                 f'Max-Age={max_age}']
+        if self._cookie_secure():
+            parts.append('Secure')
+        return '; '.join(parts)
+
+    def _oidc_routes(self, method, path, qs):
+        if method != 'GET' or path not in ('/auth/oidc/login', oidc.CALLBACK_PATH):
+            return False
+        if not oidc.enabled():
+            self._json(404, {'error': 'Single sign-on is not configured.'})
+            return True
+        q1 = lambda k: (qs.get(k) or [''])[0]
+        if path == '/auth/oidc/login':
+            try:
+                url, state = oidc.begin(self._request_base(), q1('next') or '/')
+            except oidc.OIDCError as exc:
+                self._redirect('/login?' + urlencode({'error': str(exc)}))
+                return True
+            self._redirect(url, [self._oidc_state_cookie(state, oidc.PENDING_TTL_S)])
+            return True
+        clear_state = self._oidc_state_cookie('', 0)
+        try:
+            user, nxt = oidc.finish({k: q1(k) for k in ('code', 'state', 'error', 'error_description')},
+                                    self._cookie_value(oidc.STATE_COOKIE))
+        except oidc.OIDCError as exc:
+            self._redirect('/login?' + urlencode({'error': str(exc)}), [clear_state])
+            return True
+        except Exception as exc:
+            print(f'oidc callback failed: {exc}', flush=True)
+            self._redirect('/login?' + urlencode({'error': 'Single sign-on failed. See the server log.'}),
+                           [clear_state])
+            return True
+        token = users.create_session(user['id'])
+        self._redirect(nxt, [clear_state, self._session_cookie(token, users.SESSION_TTL_S)])
+        return True
 
     def _client_ip(self):
         return self.client_address[0] if self.client_address else ''
 
     def _me_payload(self):
         return {'mode': users.AUTH_MODE, 'user': users.public(self.user),
-                'needsSetup': users.needs_setup()}
+                'needsSetup': users.needs_setup(),
+                'localLogin': users.LOCAL_LOGIN if users.enabled() else None,
+                'oidc': {'enabled': True, 'label': oidc.OIDC_BUTTON_LABEL} if oidc.enabled() else None}
 
     def _start_session(self, user, status=200):
         token = users.create_session(user['id'])
@@ -801,9 +865,14 @@ class StateHandler(BaseHTTPRequestHandler):
         if method == 'GET' and path == '/auth/me':
             self._json(200, self._me_payload())
             return True
+        if self._oidc_routes(method, path, parse_qs(urlparse(self.path).query)):
+            return True
         if method == 'POST' and path == '/auth/login':
             if not users.enabled():
                 self._json(400, {'error': 'Accounts are not enabled (AUTH_MODE=none).'})
+                return True
+            if users.LOCAL_LOGIN == 'off':
+                self._json(403, {'error': 'Password sign-in is disabled. Use single sign-on.'})
                 return True
             payload = self._body_or_400()
             if payload is None:
@@ -824,6 +893,10 @@ class StateHandler(BaseHTTPRequestHandler):
         if method == 'POST' and path == '/auth/setup':
             if not users.needs_setup():
                 self._json(409, {'error': 'Setup is already complete.'})
+                return True
+            if users.LOCAL_LOGIN == 'off':
+                self._json(403, {'error': 'Password sign-in is disabled: the first single sign-on '
+                                          'login becomes the admin.'})
                 return True
             payload = self._body_or_400()
             if payload is None:
@@ -892,6 +965,10 @@ class StateHandler(BaseHTTPRequestHandler):
                     return True
                 patch = {k: payload[k] for k in ('display_name', 'role', 'disabled', 'password')
                          if k in payload}
+                if payload.get('unlink_sso'):
+                    if users.get(uid) is None:
+                        raise KeyError(uid)
+                    users.unlink_oidc(uid)
                 self._json(200, users.public(users.update_user(uid, patch)))
             elif method == 'DELETE':
                 if uid == self.user['id']:
@@ -1321,6 +1398,12 @@ def migrate_preferences():
 
 
 if __name__ == '__main__':
+    problems = oidc.config_problems()
+    if problems:
+        raise SystemExit('OIDC configuration: ' + '; '.join(problems))
+    if oidc.enabled():
+        print(f'auth ({users.AUTH_MODE}): single sign-on via {oidc.OIDC_ISSUER} '
+              f'(password sign-in: {users.LOCAL_LOGIN})', flush=True)
     msg = users.bootstrap()
     if msg:
         print(f'auth ({users.AUTH_MODE}): {msg}', flush=True)

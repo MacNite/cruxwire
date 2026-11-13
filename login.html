@@ -36,6 +36,14 @@
              border: 0; border-radius: 8px; background: var(--brand); color: #fff; cursor: pointer; }
     button:disabled { opacity: .6; cursor: default; }
     .msg { min-height: 18px; margin-top: 12px; font-size: 13px; color: var(--err); }
+    .sso { display: block; text-align: center; text-decoration: none; margin-top: 4px; padding: 11px; font-weight: 600;
+           font-size: 15px; border-radius: 8px; background: var(--brand); color: #fff; }
+    .sso:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+    .or { display: flex; align-items: center; gap: 10px; margin: 18px 0 2px; font-size: 12px; color: var(--text3); }
+    .or::before, .or::after { content: ''; flex: 1; border-top: 1px solid var(--border); }
+    .link { background: none; color: var(--text2); width: auto; margin: 14px auto 0; padding: 4px; font-size: 13px;
+            font-weight: 500; display: block; text-decoration: underline; }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
@@ -43,6 +51,9 @@
     <div class="brand"><img src="/logo-mark.png" alt=""><span>Cruxwire</span></div>
     <h1 id="title">Sign in</h1>
     <p class="sub" id="sub">Sign in to see your digest.</p>
+    <a class="sso" id="sso" href="/auth/oidc/login" hidden>Sign in with SSO</a>
+    <div class="or" id="or" hidden>or</div>
+    <button class="link" id="show-local" type="button" hidden>Admin sign-in with password</button>
     <form id="form" autocomplete="on">
       <label for="username">Username</label>
       <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
@@ -61,13 +72,39 @@
   try { if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark'); } catch (e) {}
   const $ = (id) => document.getElementById(id);
   let setup = false;
+  const params = new URLSearchParams(location.search);
+  if (params.get('error')) $('msg').textContent = params.get('error');
 
   fetch('/auth/me', { cache: 'no-store' }).then(r => r.json()).then(me => {
     if (me.user) { location.replace('/'); return; }
+    if (me.oidc) {
+      const next = params.get('next');
+      $('sso').href = '/auth/oidc/login' + (next ? '?next=' + encodeURIComponent(next) : '');
+      $('sso').textContent = me.oidc.label;
+      $('sso').hidden = false;
+      $('sub').textContent = 'Sign in to see your digest.';
+      if (me.localLogin === 'off') {
+        $('form').hidden = true;
+      } else if (me.localLogin === 'admins' && !me.needsSetup) {
+        // Passwords are break-glass for admins only: tuck the form away.
+        $('form').hidden = true;
+        $('show-local').hidden = false;
+        $('show-local').onclick = () => { $('form').hidden = false; $('show-local').hidden = true; $('or').hidden = false; $('username').focus(); };
+      } else {
+        $('or').hidden = false;
+      }
+    }
+    if (me.needsSetup && me.localLogin === 'off') {
+      $('title').textContent = 'Welcome';
+      $('sub').textContent = 'First start: the first person to sign in becomes the administrator and keeps the existing feeds, categories and reading history.';
+      return;
+    }
     if (me.needsSetup) {
       setup = true;
       $('title').textContent = 'Create the admin account';
-      $('sub').textContent = 'First start: this account becomes the administrator and keeps the existing feeds, categories and reading history.';
+      $('sub').textContent = me.oidc
+        ? 'First start: whoever signs in first (with single sign-on or a new password account) becomes the administrator and keeps the existing feeds, categories and reading history.'
+        : 'First start: this account becomes the administrator and keeps the existing feeds, categories and reading history.';
       $('password').autocomplete = 'new-password';
       $('confirm-wrap').hidden = false;
       $('confirm').required = true;

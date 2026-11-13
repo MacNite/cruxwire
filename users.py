@@ -8,7 +8,10 @@ Cruxwire is multi-user when AUTH_MODE is set:
     AUTH_MODE=local  username/password accounts, cookie sessions, an admin who
                      manages users. Each user has private feeds, categories,
                      likes/dislikes, read state, personal ranking settings and
-                     their own digest.
+                     their own digest. Add OIDC_* settings to also offer SSO.
+    AUTH_MODE=oidc   the same accounts, with OpenID Connect SSO required to be
+                     configured (see oidc.py). LOCAL_LOGIN decides whether
+                     passwords still work: on | admins (break-glass) | off.
 
 Storage (plain JSON on the data volume, like everything else):
 
@@ -39,7 +42,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-AUTH_MODES = ('none', 'local')
+AUTH_MODES = ('none', 'local', 'oidc')
 AUTH_MODE = (os.environ.get('AUTH_MODE', 'none') or 'none').strip().lower()
 if AUTH_MODE not in AUTH_MODES:
     raise SystemExit(f'AUTH_MODE must be one of {", ".join(AUTH_MODES)} (got {AUTH_MODE!r})')
@@ -60,6 +63,12 @@ COOKIE_SECURE = (os.environ.get('COOKIE_SECURE', 'auto') or 'auto').strip().lowe
 # then only works over HTTPS).
 COOKIE_SAMESITE = {'lax': 'Lax', 'strict': 'Strict', 'none': 'None'}.get(
     (os.environ.get('COOKIE_SAMESITE', 'lax') or 'lax').strip().lower(), 'Lax')
+
+# Password sign-in: on (everyone) | admins (break-glass only, typical with SSO)
+# | off. Default: on with AUTH_MODE=local, admins with AUTH_MODE=oidc.
+LOCAL_LOGIN = (os.environ.get('LOCAL_LOGIN') or ('admins' if AUTH_MODE == 'oidc' else 'on')).strip().lower()
+if LOCAL_LOGIN not in ('on', 'admins', 'off'):
+    raise SystemExit(f'LOCAL_LOGIN must be on, admins or off (got {LOCAL_LOGIN!r})')
 
 ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', '').strip()
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', '')
@@ -231,8 +240,11 @@ def public(user):
     """A user record without secrets, for the API."""
     if not user:
         return None
-    return {k: user.get(k) for k in ('id', 'username', 'display_name', 'role', 'disabled',
-                                     'created_at', 'last_login_at', 'legacy')}
+    out = {k: user.get(k) for k in ('id', 'username', 'display_name', 'role', 'disabled',
+                                    'created_at', 'last_login_at', 'legacy', 'email')}
+    out['sso'] = bool(user.get('oidc_sub'))
+    out['has_password'] = bool(user.get('password_hash'))
+    return out
 
 
 def list_users():
@@ -275,35 +287,126 @@ def normalize_username(username):
     return username
 
 
-def create_user(username, password, role='user', display_name=None):
-    """Create an account. The first account ever created becomes the owner of
-    the existing single-user data (and is always an admin)."""
-    username = normalize_username(username)
-    check_password_policy(password)
+def _insert(username, role, display_name, unique_username=False, **extra):
+    """Add an account record. The first account ever created becomes the
+    owner of the existing single-user data (and is always an admin)."""
     if role not in ROLES:
         raise ValueError('Role must be admin or user.')
-    pw_hash = hash_password(password)
     with _lock:
         users = _load()
-        if any(u.get('username') == username for u in users):
-            raise ValueError('That username is taken.')
+        taken = {u.get('username') for u in users}
+        if username in taken:
+            if not unique_username:
+                raise ValueError('That username is taken.')
+            base = username[:58]
+            username = next(f'{base}-{i}' for i in range(2, 10000) if f'{base}-{i}' not in taken)
         first = not users
         user = {
             'id': secrets.token_hex(8),
             'username': username,
             'display_name': (display_name or '').strip()[:80] or username,
             'role': 'admin' if first else role,
-            'password_hash': pw_hash,
+            'password_hash': None,
             'disabled': False,
             'legacy': first,
             'created_at': _now_iso(),
             'last_login_at': None,
+            **extra,
         }
         users.append(user)
         _save(users)
     if not user['legacy']:
         os.makedirs(user_dir(user['id']), exist_ok=True)
     return user
+
+
+def create_user(username, password, role='user', display_name=None):
+    """Create a password account (see _insert for the first-account rule)."""
+    username = normalize_username(username)
+    check_password_policy(password)
+    if role not in ROLES:
+        raise ValueError('Role must be admin or user.')
+    return _insert(username, role, display_name, password_hash=hash_password(password))
+
+
+# ── SSO-linked accounts (see oidc.py) ──────────────────────────────────
+def _username_from(raw):
+    """A valid local username derived from an IdP username/email/sub."""
+    s = re.sub(r'[^a-z0-9._@-]+', '-', (raw or '').strip().lower()).strip('-._@')
+    if len(s) < 2:
+        s = 'user-' + secrets.token_hex(3)
+    return s[:64] if _USERNAME_RE.match(s[:64]) else 'user-' + secrets.token_hex(3)
+
+
+def by_oidc(issuer, sub):
+    for u in list_users():
+        if u.get('oidc_sub') == sub and u.get('oidc_iss') == issuer:
+            return u
+    return None
+
+
+def by_email(email):
+    email = (email or '').strip().lower()
+    if not email:
+        return None
+    matches = [u for u in list_users() if (u.get('email') or '').lower() == email]
+    return matches[0] if len(matches) == 1 else None
+
+
+def create_oidc_user(issuer, sub, preferred, role='user', display_name=None, email=None):
+    return _insert(_username_from(preferred), role, display_name, unique_username=True,
+                   oidc_iss=issuer, oidc_sub=sub,
+                   email=(email or '').strip().lower()[:200] or None)
+
+
+def link_oidc(uid, issuer, sub):
+    with _lock:
+        users = _load()
+        for u in users:
+            if u['id'] == uid:
+                u['oidc_iss'], u['oidc_sub'] = issuer, sub
+        _save(users)
+
+
+def unlink_oidc(uid):
+    with _lock:
+        users = _load()
+        for u in users:
+            if u['id'] == uid:
+                u.pop('oidc_iss', None)
+                u.pop('oidc_sub', None)
+        _save(users)
+
+
+def sync_oidc_profile(uid, profile, role=None):
+    """After an SSO login: refresh name/email, apply the IdP-managed role
+    (never demoting the last enabled admin), and stamp last_login_at."""
+    with _lock:
+        users = _load()
+        user = next((u for u in users if u['id'] == uid), None)
+        if user is None:
+            raise KeyError(uid)
+        if profile.get('display_name'):
+            user['display_name'] = str(profile['display_name']).strip()[:80]
+        if profile.get('email'):
+            user['email'] = str(profile['email']).strip().lower()[:200]
+        if role in ROLES and role != user.get('role'):
+            prev = user.get('role')
+            user['role'] = role
+            if not _admins(users):
+                user['role'] = prev
+        user['last_login_at'] = _now_iso()
+        _save(users)
+    return user
+
+
+def password_login_allowed(user):
+    """LOCAL_LOGIN policy for an account that has a password."""
+    if LOCAL_LOGIN == 'off':
+        return False
+    if LOCAL_LOGIN == 'admins':
+        return user.get('role') == 'admin'
+    return True
 
 
 def _admins(users):
@@ -382,6 +485,8 @@ def authenticate(username, password):
         _dummy_verify(password or '')
         return None
     if not verify_password(password or '', user['password_hash']) or user.get('disabled'):
+        return None
+    if not password_login_allowed(user):
         return None
     with _lock:
         users = _load()
