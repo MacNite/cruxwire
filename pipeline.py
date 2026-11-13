@@ -24,6 +24,7 @@ from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
+import article_ids
 import corpus_archive
 import images
 import netsafe
@@ -309,12 +310,8 @@ def parse_feed(xml, source, category, cutoff):
     return out
 
 
-def stable_id(url):
-    """Deterministic 8-char hex id from the URL (stable within a digest)."""
-    h = 0
-    for ch in url:
-        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
-    return format(h, '08x')[:8]
+# Collision-resistant id from the URL (see article_ids for the migration).
+stable_id = article_ids.stable_id
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1309,6 +1306,8 @@ def build_user_digest(inp, fresh, pool_by_id, embed_model, embed_cache, multi):
         if a['id'] in mine_ids or a['id'] in read_ids or not (a['_feeds'] & inp['feed_urls']):
             continue
         scored = pool_by_id.get(a['id'])
+        if scored is not None and scored.get('url') != a['url']:
+            scored = None       # id collision: never serve another story's record
         if scored is None or _blocked_for(scored.get('title', ''), blocklist):
             continue
         art = dict(scored)
@@ -1324,7 +1323,8 @@ def build_user_digest(inp, fresh, pool_by_id, embed_model, embed_cache, multi):
         age = _age_hours(prev.get('published_at'))
         if age is not None and age >= hard_max:
             continue
-        art = dict(pool_by_id.get(aid) or prev)
+        pooled = pool_by_id.get(aid)
+        art = dict(pooled if pooled is not None and pooled.get('url') == prev.get('url') else prev)
         mine.append(art)
         mine_ids.add(aid)
         carried += 1
@@ -1460,7 +1460,12 @@ def run_once():
         fresh_ids = {a['id'] for a in fresh}
         new_articles, reused = [], []
         for a in fresh:
-            (reused if a['id'] in prev_by_id else new_articles).append(a)
+            # Reuse a pooled record only when it is the same URL — an id match
+            # alone must never hand one story's record to another link.
+            prev = prev_by_id.get(a['id'])
+            if prev is not None and prev.get('url') != a['url']:
+                prev = None
+            (reused if prev is not None else new_articles).append(a)
         to_score, deferred_count = select_new_for_scoring(new_articles, cfg['max_new_scored'])
         carried_ids = {a['id'] for inp in inputs for a in inp['prev']
                        if a['id'] not in inp['read_ids']} - fresh_ids

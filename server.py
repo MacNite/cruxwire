@@ -62,6 +62,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlencode, urlparse, parse_qs
 
+import article_ids
 import images
 import oidc
 import onboarding
@@ -1407,6 +1408,24 @@ def migrate_preferences():
         print(f'preferences initialised (existing user: {existing})', flush=True)
 
 
+def migrate_article_ids():
+    """One-time (idempotent) rewrite of legacy 32-bit article ids to the new
+    collision-resistant ids, for every account's files."""
+    accounts = [users.OWNER_PSEUDO] + ([u for u in users.list_users() if not u.get('legacy')]
+                                       if users.enabled() else [])
+    for u in accounts:
+        with users.as_user(u):
+            try:
+                n = article_ids.migrate_current_user(
+                    DIGEST_FILE, pipeline.EMBEDDINGS_FILE, STATE_FILE,
+                    preferences.PREFERENCES_FILE, onboarding.ONBOARDING_POOL_FILE)
+            except Exception as exc:
+                print(f'article id migration failed for {u.get("username")}: {exc}', flush=True)
+                continue
+        if n:
+            print(f'migrated {n} article ids to the new format ({u.get("username")})', flush=True)
+
+
 if __name__ == '__main__':
     problems = oidc.config_problems()
     if problems:
@@ -1423,6 +1442,7 @@ if __name__ == '__main__':
     seed_feeds_if_missing()
     seed_categories_if_missing()
     migrate_preferences()
+    migrate_article_ids()
     pipeline.start_background(run_now=True)
     server = ThreadingHTTPServer(('0.0.0.0', PORT), StateHandler)
     print(f'Cruxwire server listening on http://0.0.0.0:{PORT}/', flush=True)
