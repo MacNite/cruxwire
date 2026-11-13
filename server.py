@@ -18,6 +18,14 @@ Endpoints:
   GET  /status                live pipeline status (running/phase/last run)
   POST /refresh               trigger a pipeline run now (202 started / 409 running / 429 cooldown)
 
+Accounts (AUTH_MODE=local; see users.py):
+  GET  /login                 sign-in / first-admin setup page
+  GET  /auth/me               {mode, user|null, needsSetup}
+  POST /auth/login /auth/logout /auth/setup     session cookie in / out; one-time admin setup
+  PUT  /auth/password         change own password {current, new}
+  GET|POST|PUT|DELETE /users  admin user management (?id=)
+  Every other endpoint acts on the signed-in user's own data (401 when signed out).
+
 Personalization / onboarding:
   GET  /onboarding            status, progress, feeds, examples + a balanced candidate batch
                               (?n=8&exclude=id,id&force=1 to rebuild the pool)
@@ -35,7 +43,8 @@ Personalization / onboarding:
 
 Security: mutating requests with a cross-site Origin are refused (CSRF guard);
 CORS is off unless CORS_ALLOW_ORIGIN is set; request bodies are size-capped.
-Deploy on a LAN/VPN or behind an authenticated reverse proxy.
+Without accounts (AUTH_MODE=none), deploy on a LAN/VPN or behind an
+authenticated reverse proxy; with accounts, still terminate TLS in a proxy.
 """
 import concurrent.futures
 import json
@@ -47,6 +56,7 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -55,6 +65,7 @@ import onboarding
 import pipeline
 import preferences
 import settings
+import users
 
 STATE_FILE  = os.environ.get('STATE_FILE', '/data/state.json')
 DIGEST_FILE = os.environ.get('DIGEST_FILE', '/data/digest.json')
@@ -139,7 +150,7 @@ def _now_iso():
 
 def load_state():
     try:
-        with open(STATE_FILE, 'r', encoding='utf-8') as fh:
+        with open(users.path(STATE_FILE), 'r', encoding='utf-8') as fh:
             data = json.load(fh)
             if not isinstance(data, dict):
                 return DEFAULT_STATE.copy()
@@ -151,14 +162,15 @@ def load_state():
 
 
 def save_state(state):
-    os.makedirs(os.path.dirname(STATE_FILE) or '.', exist_ok=True)
+    target = users.path(STATE_FILE)
+    os.makedirs(os.path.dirname(target) or '.', exist_ok=True)
     # Atomic write so a crash mid-write can't truncate state.json.
-    dir_ = os.path.dirname(STATE_FILE) or '.'
+    dir_ = os.path.dirname(target) or '.'
     fd, tmp_path = tempfile.mkstemp(prefix='.state-', suffix='.json', dir=dir_)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as fh:
             json.dump(state, fh, indent=2)
-        os.replace(tmp_path, STATE_FILE)
+        os.replace(tmp_path, target)
     except Exception:
         try:
             os.unlink(tmp_path)
@@ -277,7 +289,7 @@ def normalize_payload(payload):
 
 def load_feeds():
     try:
-        with open(FEEDS_FILE, 'r', encoding='utf-8') as fh:
+        with open(users.path(FEEDS_FILE), 'r', encoding='utf-8') as fh:
             data = json.load(fh)
             return data if isinstance(data, list) else []
     except FileNotFoundError:
@@ -291,13 +303,14 @@ def load_feeds():
 def save_feeds(feeds):
     """Atomic write — the pipeline reads this file too, so it must never see
     partial bytes."""
-    os.makedirs(os.path.dirname(FEEDS_FILE) or '.', exist_ok=True)
-    dir_ = os.path.dirname(FEEDS_FILE) or '.'
+    target = users.path(FEEDS_FILE)
+    os.makedirs(os.path.dirname(target) or '.', exist_ok=True)
+    dir_ = os.path.dirname(target) or '.'
     fd, tmp_path = tempfile.mkstemp(prefix='.feeds-', suffix='.json', dir=dir_)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as fh:
             json.dump(feeds, fh, indent=2)
-        os.replace(tmp_path, FEEDS_FILE)
+        os.replace(tmp_path, target)
     except Exception:
         try:
             os.unlink(tmp_path)
@@ -441,14 +454,15 @@ def seed_categories_if_missing():
     volume so a self-hoster has an editable starting point (and the app loads
     them from one place). Until edited, load_categories() falls back to the
     built-in defaults anyway, so this is purely for discoverability."""
-    if os.path.exists(settings.CATEGORIES_FILE) or not SEED_CATEGORIES:
+    target = users.path(settings.CATEGORIES_FILE)
+    if os.path.exists(target) or not SEED_CATEGORIES:
         return
     try:
         with open(SEED_CATEGORIES, 'r', encoding='utf-8') as fh:
             data = json.load(fh)
         if isinstance(data, list) and data:
-            os.makedirs(os.path.dirname(settings.CATEGORIES_FILE) or '.', exist_ok=True)
-            with open(settings.CATEGORIES_FILE, 'w', encoding='utf-8') as fh:
+            os.makedirs(os.path.dirname(target) or '.', exist_ok=True)
+            with open(target, 'w', encoding='utf-8') as fh:
                 json.dump(data, fh, indent=2)
             print(f'seeded {len(data)} categories from {SEED_CATEGORIES}', flush=True)
     except Exception as exc:
@@ -488,11 +502,17 @@ def list_ollama_models():
 
 def settings_payload():
     """Full Settings response: effective values, the schema that drives the
-    form, and read-only deploy info."""
+    form, and read-only deploy info (admins only). With accounts on, each
+    schema entry says whether this caller may edit it."""
+    admin = users.current().get('role') == 'admin'
+    schema = settings.schema()
+    for spec in schema.values():
+        spec['editable'] = admin or spec['scope'] == 'user'
     return {
         'settings': settings.load(),
-        'schema': settings.schema(),
-        'deploy': deploy_info(),
+        'schema': schema,
+        'deploy': deploy_info() if admin else None,
+        'multiUser': users.enabled(),
     }
 
 
@@ -502,7 +522,7 @@ def ranked_articles(category='all', offset=0, limit=20):
     with topic/publisher diversity and the exploration share. Paging walks
     further down the same ranking, so 'Discover more' never repeats items."""
     try:
-        with open(DIGEST_FILE, 'r', encoding='utf-8') as fh:
+        with open(users.path(DIGEST_FILE), 'r', encoding='utf-8') as fh:
             digest = json.load(fh)
     except Exception:
         digest = {}
@@ -620,7 +640,7 @@ class StateHandler(BaseHTTPRequestHandler):
         """Serve the current digest, or an empty one if the pipeline hasn't
         produced its first run yet (nicer than a 404 in the UI)."""
         try:
-            with open(DIGEST_FILE, 'rb') as fh:
+            with open(users.path(DIGEST_FILE), 'rb') as fh:
                 data = fh.read()
         except FileNotFoundError:
             self._json(200, {'generated_at': None, 'article_count': 0, 'articles': []})
@@ -695,12 +715,220 @@ class StateHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
 
+    # ── auth ─────────────────────────────────────────────────────────
+    def _session_token(self):
+        raw = self.headers.get('Cookie')
+        if not raw:
+            return None
+        try:
+            c = SimpleCookie()
+            c.load(raw)
+        except Exception:
+            return None
+        m = c.get(users.SESSION_COOKIE)
+        return m.value if m else None
+
+    def _resolve_user(self):
+        """The user making this request: the implicit owner without accounts,
+        else whoever the session cookie belongs to (None = not logged in)."""
+        if not users.enabled():
+            return users.OWNER_PSEUDO
+        return users.session_user(self._session_token())
+
+    def _is_admin(self):
+        return bool(self.user) and self.user.get('role') == 'admin'
+
+    def _require_admin(self):
+        if self._is_admin():
+            return True
+        self._json(403, {'error': 'Admins only'})
+        return False
+
+    def _cookie_secure(self):
+        if users.COOKIE_SECURE in ('1', 'true', 'yes'):
+            return True
+        if users.COOKIE_SECURE in ('0', 'false', 'no'):
+            return False
+        proto = (self.headers.get('X-Forwarded-Proto') or '').split(',')[0].strip().lower()
+        return proto == 'https'
+
+    def _session_cookie(self, token, max_age):
+        parts = [f'{users.SESSION_COOKIE}={token}', 'Path=/', 'HttpOnly',
+                 f'SameSite={users.COOKIE_SAMESITE}', f'Max-Age={max_age}']
+        if self._cookie_secure() or users.COOKIE_SAMESITE == 'None':
+            parts.append('Secure')
+        return '; '.join(parts)
+
+    def _json_with_cookie(self, status, payload, cookie):
+        body = json.dumps(payload).encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Set-Cookie', cookie)
+        self._security_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _redirect(self, location):
+        self.send_response(302)
+        self.send_header('Location', location)
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Content-Length', '0')
+        self._security_headers()
+        self.end_headers()
+
+    def _client_ip(self):
+        return self.client_address[0] if self.client_address else ''
+
+    def _me_payload(self):
+        return {'mode': users.AUTH_MODE, 'user': users.public(self.user),
+                'needsSetup': users.needs_setup()}
+
+    def _start_session(self, user, status=200):
+        token = users.create_session(user['id'])
+        self.user = user
+        self._json_with_cookie(status, self._me_payload(),
+                               self._session_cookie(token, users.SESSION_TTL_S))
+
+    def _auth_routes(self, method, path):
+        """Login/logout/setup and account endpoints. Returns True if handled."""
+        if method == 'GET' and path == '/login':
+            if not users.enabled():
+                self._redirect('/')
+                return True
+            self._serve_file(os.path.join(STATIC_DIR, 'login.html'), STATIC_TYPES['.html'])
+            return True
+        if method == 'GET' and path == '/auth/me':
+            self._json(200, self._me_payload())
+            return True
+        if method == 'POST' and path == '/auth/login':
+            if not users.enabled():
+                self._json(400, {'error': 'Accounts are not enabled (AUTH_MODE=none).'})
+                return True
+            payload = self._body_or_400()
+            if payload is None:
+                return True
+            username = str(payload.get('username') or '')[:64].strip().lower()
+            keys = ('u:' + username, 'ip:' + self._client_ip())
+            if users.throttled(*keys):
+                self._json(429, {'error': 'Too many failed attempts. Try again later.'})
+                return True
+            user = users.authenticate(username, str(payload.get('password') or ''))
+            if user is None:
+                users.record_failure(*keys)
+                self._json(401, {'error': 'Wrong username or password.'})
+                return True
+            users.clear_failures(keys[0])
+            self._start_session(user)
+            return True
+        if method == 'POST' and path == '/auth/setup':
+            if not users.needs_setup():
+                self._json(409, {'error': 'Setup is already complete.'})
+                return True
+            payload = self._body_or_400()
+            if payload is None:
+                return True
+            try:
+                user = users.create_user(payload.get('username'), payload.get('password'), 'admin',
+                                         payload.get('display_name'))
+            except ValueError as exc:
+                self._json(400, {'error': str(exc)})
+                return True
+            self._start_session(user, 201)
+            return True
+        if method == 'POST' and path == '/auth/logout':
+            users.revoke_session(self._session_token())
+            self._json_with_cookie(200, {'ok': True}, self._session_cookie('', 0))
+            return True
+        return False
+
+    def _account_routes(self, method, path, qs):
+        """/auth/password (self-service) and /users (admin). Requires a
+        logged-in user. Returns True if handled."""
+        if path == '/auth/password' and method == 'PUT':
+            if not users.enabled():
+                self._json(400, {'error': 'Accounts are not enabled (AUTH_MODE=none).'})
+                return True
+            payload = self._body_or_400()
+            if payload is None:
+                return True
+            try:
+                users.set_password(self.user['id'], payload.get('current'), payload.get('new'))
+            except PermissionError as exc:
+                self._json(403, {'error': str(exc)})
+                return True
+            except ValueError as exc:
+                self._json(400, {'error': str(exc)})
+                return True
+            # Changing the password signs out every session; start a fresh one.
+            self._start_session(users.get(self.user['id']))
+            return True
+        if path != '/users':
+            return False
+        if not users.enabled():
+            self._json(400, {'error': 'Accounts are not enabled (AUTH_MODE=none).'})
+            return True
+        if not self._require_admin():
+            return True
+        uid = (qs.get('id') or [''])[0]
+        try:
+            if method == 'GET':
+                self._json(200, {'users': [users.public(u) for u in users.list_users()]})
+            elif method == 'POST':
+                payload = self._body_or_400()
+                if payload is None:
+                    return True
+                u = users.create_user(payload.get('username'), payload.get('password'),
+                                      payload.get('role') or 'user', payload.get('display_name'))
+                with users.as_user(u):
+                    seed_categories_if_missing()   # an editable starting point
+                self._json(201, users.public(u))
+            elif method == 'PUT':
+                payload = self._body_or_400()
+                if payload is None:
+                    return True
+                if uid == self.user['id'] and (payload.get('disabled') or payload.get('role') == 'user'):
+                    self._json(400, {'error': 'You cannot disable or demote your own account.'})
+                    return True
+                patch = {k: payload[k] for k in ('display_name', 'role', 'disabled', 'password')
+                         if k in payload}
+                self._json(200, users.public(users.update_user(uid, patch)))
+            elif method == 'DELETE':
+                if uid == self.user['id']:
+                    self._json(400, {'error': 'You cannot delete your own account.'})
+                    return True
+                self._json(200, {'deleted': users.public(users.delete_user(uid))})
+            else:
+                self.send_error(405, 'Method Not Allowed')
+        except KeyError:
+            self._json(404, {'error': 'No such user'})
+        except ValueError as exc:
+            self._json(400, {'error': str(exc)})
+        return True
+
+    def _is_public_asset(self, path):
+        return path.lstrip('/') in ICON_FILES or bool(_FALLBACK_RE.match(path))
+
     # ── routing ──────────────────────────────────────────────────────
     def _dispatch(self, method):
         if method != 'GET' and not self._guard_mutation():
             return
         try:
-            getattr(self, '_' + method.lower())()
+            parsed = urlparse(self.path)
+            path = parsed.path
+            self.user = self._resolve_user()
+            if self._auth_routes(method, path):
+                return
+            if self.user is None and not self._is_public_asset(path):
+                if method == 'GET' and path in ('/', '/index.html', '/digest.html'):
+                    self._redirect('/login')
+                else:
+                    self._json(401, {'error': 'Login required', 'login': '/login'})
+                return
+            with users.as_user(self.user or users.OWNER_PSEUDO):
+                if self.user is not None and self._account_routes(method, path, parse_qs(parsed.query)):
+                    return
+                getattr(self, '_' + method.lower())()
         except BodyTooLarge:
             self._json(413, {'error': 'Request body too large'})
         except BrokenPipeError:
@@ -746,12 +974,16 @@ class StateHandler(BaseHTTPRequestHandler):
             self._json(200, settings_payload())
             return
         if path == '/models':
+            if not self._require_admin():
+                return
             self._json(200, list_ollama_models())
             return
         if path == '/status':
             self._json(200, pipeline.get_status())
             return
         if path == '/runs':
+            if not self._require_admin():
+                return
             self._json(200, pipeline.get_runs())
             return
         if path == '/categories':
@@ -829,8 +1061,9 @@ class StateHandler(BaseHTTPRequestHandler):
             payload = self._body_or_400()
             if payload is None:
                 return
-            # settings.save validates/clamps and ignores unknown keys.
-            settings.save(payload)
+            # settings.save validates/clamps and ignores unknown keys; only an
+            # admin may change the global (non-personal) ones.
+            settings.save(payload, allow_global=self._is_admin())
             self._json(200, settings_payload())
             return
         if path == '/categories':
@@ -1088,6 +1321,9 @@ def migrate_preferences():
 
 
 if __name__ == '__main__':
+    msg = users.bootstrap()
+    if msg:
+        print(f'auth ({users.AUTH_MODE}): {msg}', flush=True)
     seed_feeds_if_missing()
     seed_categories_if_missing()
     migrate_preferences()

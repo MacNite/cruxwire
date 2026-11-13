@@ -57,6 +57,9 @@ No build step, **no Python dependencies** (pure stdlib), no external services ot
   all editable in-app and apply on the next run, no restart.
 - **Multi-device state** - read / Read Later / History sync through the server; the app is fully
   usable offline from local cache.
+- **Optional user accounts** - `AUTH_MODE=local` adds login and an admin-managed user list; every
+  user gets private feeds, categories, likes and their own ranked digest, while each article is
+  still fetched and scored by the model only once. See [User accounts](#user-accounts).
 
 ---
 
@@ -117,8 +120,9 @@ tags (`v1.2.3`) publish `:1.2.3`, `:1.2` and `:1`.
 
 Open `http://<host>:8090/`.
 
-> ⚠️ **There is no login.** Keep this on a trusted private network and don't expose port 8090 to the
-> internet - see [Security & deployment](#security--deployment).
+> ⚠️ **By default there is no login.** Keep this on a trusted private network and don't expose port
+> 8090 to the internet, or turn on [user accounts](#user-accounts) - see
+> [Security & deployment](#security--deployment).
 
 On first open a **setup wizard** walks you through choosing sources (the bundled
 [feeds.sample.json](feeds.sample.json) list is pre-loaded and editable) and rating ~10 stories so the
@@ -154,14 +158,60 @@ host's LAN IP.)
 
 ---
 
+## User accounts
+
+By default (`AUTH_MODE=none`) Cruxwire is single-user with no login, exactly as before. Set
+`AUTH_MODE=local` to turn on accounts:
+
+```yaml
+    environment:
+      AUTH_MODE: local
+      # Optional: create the first admin on start instead of via the setup page.
+      ADMIN_USERNAME: alice
+      ADMIN_PASSWORD: change-me-please
+```
+
+- **First start** - with no accounts yet, the app shows a one-time *Create the admin account* page
+  (or uses `ADMIN_USERNAME` / `ADMIN_PASSWORD`). That first admin **owns the existing data**: your
+  current feeds, categories, likes and history stay theirs, with no migration. Switching back to
+  `AUTH_MODE=none` returns you to that same data.
+- **Everything personal is private per user** - feeds, categories (and their interest descriptions),
+  likes/dislikes, onboarding, read/Read Later/History, keyword and topic blocklists, retention and
+  personalization settings, and the ranked digest itself. New users start in the onboarding wizard.
+- **Admins** manage users in *Settings → Users* (add, reset password, promote, disable, delete) and
+  own the global settings: models, clustering, ingestion budget and schedule, plus the run log.
+  Everyone can change their password and sign out in *Settings → Account*.
+- **The model works once, not once per user.** Each run fetches the union of everyone's feeds once
+  and scores/summarises/embeds each new article once. With accounts on, that LLM score is a
+  reader-neutral *newsworthiness* score; each user's relevance is then
+  `(1 - w) × newsworthiness + w × 10 × interest match`, where *interest match* is the embedding
+  similarity to that user's category interests and `w` is their *Interest match weight*
+  (Settings → Personalize). Likes/dislikes, taste and publisher affinity apply on top, per user.
+  Adding users costs only cheap embedding math, not chat-model time.
+- **Sessions** are random tokens in an `HttpOnly`, `SameSite=Lax` cookie (marked `Secure` behind
+  HTTPS - set `X-Forwarded-Proto` in your proxy, or force it with `COOKIE_SECURE=true`). Only a hash
+  of each token is stored. Passwords are PBKDF2-SHA256 hashed. Repeated failed logins are throttled
+  per username and per client address. Disabling a user or changing a password signs out their
+  sessions.
+- **Home Assistant** - browsers don't send `SameSite=Lax` cookies inside a cross-site iframe. To
+  embed the app in an HA dashboard on another origin, serve it over HTTPS and set
+  `COOKIE_SAMESITE=none`.
+
+Data layout with accounts: `/data/users.json` (accounts), `/data/sessions.json`, and
+`/data/users/<id>/` for each user other than the owner (the owner keeps the original files in `/data`).
+
+---
+
 ## Security & deployment
 
-Cruxwire has **no authentication**. Every endpoint - including the ones that change settings, feeds,
-and categories and trigger pipeline runs - is reachable by anyone who can reach the port. It is built
-for a **single trusted user on a private network**: a homelab LAN, a Tailscale/WireGuard tailnet, or
-`localhost`.
+With the default `AUTH_MODE=none`, Cruxwire has **no authentication**. Every endpoint - including
+the ones that change settings, feeds, and categories and trigger pipeline runs - is reachable by
+anyone who can reach the port. That mode is built for a **single trusted user on a private network**:
+a homelab LAN, a Tailscale/WireGuard tailnet, or `localhost`. With `AUTH_MODE=local` every endpoint
+except the login page requires a signed-in user (see [User accounts](#user-accounts)).
 
-**Do not expose port 8090 directly to the internet.** If you want remote access, put it behind a
+**Do not expose port 8090 directly to the internet.** Even with accounts on, the app speaks plain
+HTTP: for remote access, put it behind a TLS-terminating reverse proxy, and without accounts behind a
 reverse proxy that adds authentication - Caddy/nginx with basic auth, [Authelia](https://www.authelia.com),
 [Tailscale](https://tailscale.com), Cloudflare Access, etc.
 
@@ -176,8 +226,8 @@ Also worth knowing:
   only if you deliberately subscribe to feeds on your LAN.
 - **Cross-site requests are refused.** Mutating requests whose `Origin` doesn't match the host are
   rejected (CSRF guard); CORS is off unless you set `CORS_ALLOW_ORIGIN`. Request bodies are size-capped
-  and manual refreshes can't overlap or queue (409 while running, 429 within a cooldown). There is
-  still no authentication - the trust model is "the network is trusted".
+  and manual refreshes can't overlap or queue (409 while running, 429 within a cooldown). Without
+  accounts the trust model is "the network is trusted".
 - **Embedding in Home Assistant** - framing is allowed by default; set `FRAME_ANCESTORS` (e.g.
   `'self' https://ha.example.lan`) to restrict which sites may embed the app.
 - **Runtime data is stored unencrypted** on the Docker volume (read history, Read Later, learned
@@ -236,15 +286,19 @@ next run. The pipeline, feed validation, and UI all read from this one place.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/` | The dashboard (`digest.html`) |
+| `GET` | `/` | The dashboard (`digest.html`); redirects to `/login` when accounts are on and you're signed out |
+| `GET` | `/auth/me` | Auth mode, the signed-in user (or `null`), and whether first-run setup is needed |
+| `POST` | `/auth/login` · `/auth/logout` · `/auth/setup` | Sign in `{username, password}` · sign out · create the first admin (once) |
+| `PUT` | `/auth/password` | Change your own password `{current, new}` |
+| `GET` / `POST` / `PUT` / `DELETE` | `/users` (`?id=`) | Admin: list / create `{username, password, role, display_name}` / update `{role, disabled, password, display_name}` / delete users |
 | `GET` | `/digest.json` | Current ranked digest |
 | `GET` / `PUT` | `/state` | Read / save user state (read, later, history, sourceStats) |
 | `GET` / `PUT` | `/settings` | Read schema + values / save runtime settings |
 | `GET` / `POST` / `DELETE` | `/feeds` | List / add / remove feeds |
 | `GET` | `/feeds/check?url=` | Validate a feed URL before adding |
-| `GET` | `/models` | Ollama models available on the host |
+| `GET` | `/models` | Ollama models available on the host (admin) |
 | `GET` | `/status` | Live pipeline run status (for the "updating…" pill) |
-| `GET` | `/runs` | Recent pipeline run log (powers Settings → Runs) |
+| `GET` | `/runs` | Recent pipeline run log (powers Settings → Runs; admin) |
 | `GET` | `/categories` | Configured categories (key / label / color / interest) |
 | `GET` | `/search?q=&threshold=` | Semantic search - ranked digest matches by embedding similarity |
 | `POST` | `/refresh` | Trigger a pipeline run now (202 started · 409 already running · 429 cooldown) |
@@ -264,7 +318,9 @@ Mutable data lives on the `cruxwire-data` Docker volume (`/data` in the containe
 `state.json`, `feeds.json`, `digest.json`, `settings.json`, `runs.json`, `categories.json`,
 `embeddings.json` (article vectors for semantic search, rewritten each run), `preferences.json`
 (likes/dislikes + onboarding status), and three bounded caches - `embed_cache.json`,
-`image_cache.json`, `onboarding_pool.json` - that are safe to delete. The app code is baked into the image, so
+`image_cache.json`, `onboarding_pool.json` - that are safe to delete. With accounts on there is also
+`users.json`, `sessions.json` and a `users/<id>/` directory per additional user (see
+[User accounts](#user-accounts)). The app code is baked into the image, so
 rebuilds preserve your data; new settings keys fall back to their defaults automatically. Back up the
 volume to preserve your feed list, read history, and learned preferences.
 
@@ -306,6 +362,7 @@ python pipeline.py --benchmark 5
 | [server.py](server.py) | HTTP server: UI, state/settings/feeds API, digest serving, state pruning |
 | [pipeline.py](pipeline.py) | Ingestion pipeline + scheduler: fetch → carry-forward → score → cluster → retain |
 | [settings.py](settings.py) | Runtime-settings schema (drives the Settings form), validation, persistence |
+| [users.py](users.py) | Accounts, password hashing, sessions, per-user data paths (`AUTH_MODE`) |
 | [preferences.py](preferences.py) | Likes/dislikes + onboarding state (`preferences.json`) |
 | [onboarding.py](onboarding.py) | Wizard backend: feed inspection, candidate pool/rotation, seeds, completion |
 | [images.py](images.py) | Preview-image resolution, URL normalisation, Google News decoding, fallbacks |
@@ -313,6 +370,7 @@ python pipeline.py --benchmark 5
 | [static/fallback/](static/fallback/) | Local topic illustrations (original artwork, MIT) |
 | [tests/](tests/) | Unit, API and image/HTML contract tests |
 | [digest.html](digest.html) | Single-file frontend: views, ranking display, affinity learning, layout |
+| [login.html](login.html) | Sign-in / first-admin setup page (accounts mode) |
 | [TUNING.md](TUNING.md) | Every adjustable knob, interactions, and recipes |
 
 ---

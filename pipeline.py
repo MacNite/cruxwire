@@ -28,6 +28,7 @@ import corpus_archive
 import images
 import netsafe
 import settings
+import users
 
 # ──────────────────────────────────────────────────────────────────────
 # CONFIG. Deploy-time wiring (Ollama, ports, paths) stays env-only. The
@@ -337,6 +338,77 @@ def build_system_prompt(categories):
             "- category must be one of the exact strings listed in the schema.")
 
 
+def build_neutral_prompt(categories):
+    """Multi-user scorer prompt: one score per article that is NOT tied to any
+    one reader (each user's interests are applied afterwards by embedding, see
+    apply_interest), plus a category from the union of everyone's categories."""
+    topics = "\n".join(f"- {c['key']}: {c['interest']}" for c in categories)
+    return ("You are an editor rating stories for a general news digest.\n\n"
+            "Rate how substantive and newsworthy the article is for a curious, "
+            "well-informed reader, regardless of topic.\n\n"
+            "Categories (key: description):\n"
+            f"{topics}\n\n"
+            "Scoring:\n"
+            "8-10 = important or exceptionally informative, worth reading in full\n"
+            "5-7  = solid, worth a skim\n"
+            "0-4  = thin, promotional, clickbait or trivial\n\n"
+            "Rules:\n"
+            "- Respond ONLY with valid JSON. No markdown fences, no commentary.\n"
+            "- summary must be 1-2 sentences, max 180 characters, no em dashes.\n"
+            "- category must be one of the exact keys listed in the schema.")
+
+
+# Per-user interest matching (multi-user mode): cosine similarity between an
+# article and the user's category interest descriptions, calibrated from
+# [LO, HI] onto [0, 1].
+INTEREST_SIM_LO = float(os.environ.get('INTEREST_SIM_LO', '0.45'))
+INTEREST_SIM_HI = float(os.environ.get('INTEREST_SIM_HI', '0.75'))
+
+
+def apply_interest(articles, categories, embed_model, embed_cache, weight):
+    """Multi-user relevance: blend the shared, reader-neutral LLM score with
+    how well each article matches THIS user's category interests, and put it
+    in one of the user's own categories. Cheap — one embedding per category
+    (cached), dot products per article, no chat calls.
+
+        score = (1 - weight) * base_score + weight * 10 * interest_match
+
+    Category: the LLM's pick if the user has that category, else the category
+    the user filed the source feed under, else the closest interest."""
+    cat_vecs = []
+    for c in categories:
+        text = f"{c.get('label', '')}: {c.get('interest') or c.get('label') or c['key']}"
+        v = embed_cache.embed(text, embed_model) if embed_cache else _embed(text, embed_model)
+        n = _normalize(v) if v else None
+        if n:
+            cat_vecs.append((c['key'], n))
+    keys = {c['key'] for c in categories}
+    weight = max(0.0, min(1.0, weight))
+    for a in articles:
+        base = a.get('base_score', a.get('score', 0.0))
+        a['base_score'] = base
+        n = _normalize(a['embedding']) if a.get('embedding') else None
+        best_key, best_sim = None, None
+        if n and cat_vecs:
+            best_key, best_sim = max(((k, sum(x * y for x, y in zip(n, v))) for k, v in cat_vecs),
+                                     key=lambda kv: kv[1])
+        llm_cat, hint = a.get('llm_category') or a.get('category'), a.get('_hint_cat')
+        if llm_cat in keys:
+            a['category'] = llm_cat
+        elif hint in keys:
+            a['category'] = hint
+        elif best_key:
+            a['category'] = best_key
+        if best_sim is None:
+            a['interest_match'] = None
+            a['score'] = base
+            continue
+        match = calibrate(best_sim, INTEREST_SIM_LO, INTEREST_SIM_HI)
+        a['interest_match'] = round(match, 3)
+        a['score'] = round((1 - weight) * base + weight * 10.0 * match, 2)
+    return articles
+
+
 def _fetch_page(url):
     """Return (og_image_or_None, body_excerpt) for an article URL. Google News
     links are resolved to the publisher first where that can be done offline;
@@ -587,7 +659,7 @@ def _embed_many(texts, embed_model, workers=4):
 
 def _load_user_state():
     try:
-        with open(STATE_FILE, 'r', encoding='utf-8') as fh:
+        with open(users.path(STATE_FILE), 'r', encoding='utf-8') as fh:
             d = json.load(fh)
         return d if isinstance(d, dict) else {}
     except Exception:
@@ -597,7 +669,7 @@ def _load_user_state():
 def _load_embeddings_index():
     """{article_id: vector} for the current digest, or {} if none yet."""
     try:
-        with open(EMBEDDINGS_FILE, 'r', encoding='utf-8') as fh:
+        with open(users.path(EMBEDDINGS_FILE), 'r', encoding='utf-8') as fh:
             d = json.load(fh)
         vecs = d.get('vectors') if isinstance(d, dict) else None
         return vecs if isinstance(vecs, dict) else {}
@@ -1040,7 +1112,7 @@ def _age_hours(published_at, now=None):
 def _load_prev_digest_articles():
     """Articles from the currently-stored digest (for carry-forward), or []."""
     try:
-        with open(DIGEST_FILE, 'r', encoding='utf-8') as fh:
+        with open(users.path(DIGEST_FILE), 'r', encoding='utf-8') as fh:
             data = json.load(fh)
     except Exception:
         return []
@@ -1193,15 +1265,121 @@ def _record_run(rec):
 
 def load_feeds():
     try:
-        with open(FEEDS_FILE, 'r', encoding='utf-8') as fh:
+        with open(users.path(FEEDS_FILE), 'r', encoding='utf-8') as fh:
             data = json.load(fh)
             return data if isinstance(data, list) else []
     except Exception:
         return []
 
 
+def _user_digest_inputs(user):
+    """Per-user inputs the shared phase needs: feeds, read ids, keyword
+    blocklist, previous digest + embedding index."""
+    with users.as_user(user):
+        cfg = settings.load()
+        feeds = [f for f in load_feeds() if isinstance(f, dict) and f.get('url')]
+        return {
+            'user': user,
+            'feeds': feeds,
+            'feed_urls': {f['url'] for f in feeds},
+            'feed_cats': {f['url']: f.get('category') or '' for f in feeds},
+            'read_ids': _load_read_ids(),
+            'blocklist': [k.lower() for k in cfg['block_keywords']],
+            'prev': [a for a in _load_prev_digest_articles() if isinstance(a, dict) and a.get('id')],
+            'emb_index': _load_embeddings_index(),
+        }
+
+
+def _blocked_for(title, blocklist):
+    return bool(TITLE_BLOCKLIST.search(title) or settings.is_blocked(title, blocklist))
+
+
+def build_user_digest(inp, fresh, pool_by_id, embed_model, embed_cache, multi):
+    """Personalize, cluster and retain one user's digest from the shared,
+    already-scored article pool, and write it to the user's own files.
+    Must run inside users.as_user(inp['user']). Returns (articles, clusters)."""
+    cfg = settings.load()
+    read_ids, blocklist = inp['read_ids'], inp['blocklist']
+    hard_max = cfg['retain_hard_max_age_hours']
+
+    # This user's fresh articles: from feeds they follow, unread, not blocked,
+    # and scored (an article deferred by the CPU budget waits for a later run).
+    mine, mine_ids = [], set()
+    for a in fresh:
+        if a['id'] in mine_ids or a['id'] in read_ids or not (a['_feeds'] & inp['feed_urls']):
+            continue
+        scored = pool_by_id.get(a['id'])
+        if scored is None or _blocked_for(scored.get('title', ''), blocklist):
+            continue
+        art = dict(scored)
+        art['_hint_cat'] = next((inp['feed_cats'][u] for u in a['_feeds'] if u in inp['feed_cats']), '')
+        mine.append(art)
+        mine_ids.add(a['id'])
+    # Carry forward this user's unread stories from their previous digest.
+    carried = 0
+    for prev in inp['prev']:
+        aid = prev['id']
+        if aid in read_ids or aid in mine_ids or _blocked_for(prev.get('title', ''), blocklist):
+            continue
+        age = _age_hours(prev.get('published_at'))
+        if age is not None and age >= hard_max:
+            continue
+        art = dict(pool_by_id.get(aid) or prev)
+        mine.append(art)
+        mine_ids.add(aid)
+        carried += 1
+    if carried:
+        log(f'carrying forward {carried} unread stor{"y" if carried == 1 else "ies"}')
+
+    if multi:
+        apply_interest(mine, settings.load_categories(), embed_model, embed_cache,
+                       cfg['interest_weight'])
+    for a in mine:
+        a.pop('_hint_cat', None)
+
+    # Semantic blocklist, then personalization: implicit taste (saves/opens),
+    # explicit likes / dislikes against multiple examples, publisher affinity.
+    mine = semantic_block(mine, cfg['block_topics'], cfg['block_topic_threshold'], embed_model)
+    apply_taste(mine, embed_model, cfg['taste_weight'], embed_cache)
+    positives, negatives = load_feedback_examples(embed_model, embed_cache)
+    apply_feedback(mine, positives, negatives,
+                   cfg['feedback_like_weight'], cfg['feedback_dislike_weight'],
+                   cfg['feedback_cap'], cfg['source_affinity_weight'])
+
+    mine = cluster(mine, cfg['sim_threshold'], cfg['boost_cap'], cfg['boost_k'])
+    # Keep each article's embedding (keyed by id) before stripping it from the
+    # digest — semantic search ranks against these.
+    emb_index = {a['id']: a['embedding'] for a in mine if a.get('embedding')}
+    for a in mine:
+        for k in ('embedding', '_score_ok', '_score_ms', '_enrich_ms'):
+            a.pop(k, None)
+    mine.sort(key=rank_score, reverse=True)
+
+    pool_size = len(mine)
+    mine = apply_retention(mine, cfg)
+    if len(mine) != pool_size:
+        log(f'retention kept {len(mine)}/{pool_size} articles')
+
+    now = datetime.now(timezone.utc).isoformat()
+    _atomic_write_json(users.path(DIGEST_FILE), {
+        'generated_at': now, 'article_count': len(mine), 'articles': mine})
+    kept_ids = {a['id'] for a in mine}
+    _atomic_write_json(users.path(EMBEDDINGS_FILE), {
+        'generated_at': now, 'model': embed_model,
+        'vectors': {i: v for i, v in emb_index.items() if i in kept_ids}})
+    corpus_archive.archive_articles(mine, emb_index, embed_model, cfg, log=log)
+    return mine, len({a['cluster_id'] for a in mine})
+
+
 def run_once():
-    """One full pipeline pass. No-op (returns False) if one is already running."""
+    """One full pipeline pass. No-op (returns False) if one is already running.
+
+    Shared phase (once, whatever the number of users): fetch the union of every
+    user's feeds, then score/summarise/embed each never-seen article ONCE.
+    Per-user phase: build each user's digest from that pool — their feeds,
+    read state, blocklists, categories, likes and taste — with embeddings only,
+    no extra LLM calls.
+    """
     if not _run_lock.acquire(blocking=False):
         log('run already in progress; skipping')
         return False
@@ -1214,116 +1392,121 @@ def run_once():
     avg_score_ms = avg_enrich_ms = None
     gpu_ratio = None
     error = None
+    user_count = 0
     try:
-        cfg = settings.load()
-        user_blocklist = [k.lower() for k in cfg['block_keywords']]
-        feeds = load_feeds()
+        multi = users.enabled()
+        with users.as_user(users.OWNER_PSEUDO):
+            cfg = settings.load()           # global keys (models, ingestion)
+        inputs = [_user_digest_inputs(u) for u in users.active_users()]
+        user_count = len(inputs)
+        feeds = OrderedDict()
+        for inp in inputs:
+            for f in inp['feeds']:
+                feeds.setdefault(f['url'], f)
         if not feeds:
             log('no feeds configured; nothing to do')
             return False
         feed_count = len(feeds)
-        log(f'fetching {feed_count} feeds')
+        log(f'fetching {feed_count} feeds for {user_count} user(s)')
         _set_status(feed_count=feed_count)
         cutoff = datetime.now(timezone.utc) - timedelta(hours=cfg['lookback_hours'])
 
-        # Fetch feeds concurrently.
+        # Fetch each distinct feed once, concurrently.
         def fetch(feed):
             return http_get_text(feed.get('url', ''), FEED_TIMEOUT), feed
 
         bodies = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(feeds))) as ex:
-            for body, feed in ex.map(fetch, feeds):
+            for body, feed in ex.map(fetch, feeds.values()):
                 if body:
                     bodies.append((body, feed))
 
-        # Parse + dedup + blocklist.
-        seen, fresh = set(), []
+        # Parse + dedup. Each article remembers every feed it came from, so it
+        # reaches every user following any of them.
+        by_url = {}
         for body, feed in bodies:
             for art in parse_feed(body, feed.get('source', ''),
                                   feed.get('category', 'tech'), cutoff):
-                if (art['url'] in seen
-                        or TITLE_BLOCKLIST.search(art['title'])
-                        or settings.is_blocked(art['title'], user_blocklist)):
+                if art['url'] in by_url:
+                    by_url[art['url']]['_feeds'].add(feed['url'])
                     continue
-                seen.add(art['url'])
+                if TITLE_BLOCKLIST.search(art['title']):
+                    continue
                 art['id'] = stable_id(art['url'])
-                fresh.append(art)
+                art['_feeds'] = {feed['url']}
+                by_url[art['url']] = art
 
+        # Keep only articles some subscriber still wants (not read, not on
+        # their keyword blocklist) — no LLM budget for stories nobody will see.
+        def wanted(a):
+            return any(a['_feeds'] & inp['feed_urls'] and a['id'] not in inp['read_ids']
+                       and not settings.is_blocked(a['title'], inp['blocklist'])
+                       for inp in inputs)
+
+        fresh = [a for a in by_url.values() if wanted(a)]
         fresh.sort(key=lambda a: a['published_at'], reverse=True)
         fresh = fresh[:cfg['max_articles']]
 
-        # Carry-forward: bring unread stories from the last digest back into the
-        # pool so a story you never read doesn't vanish just because its source
-        # feed rotated it out. Read stories are vacated; truly stale ones are
-        # cut by the hard age cap.
-        #
-        # CPU budget: an article already scored in a previous run is REUSED
-        # (score/summary/image kept, embedding taken from the stored index), so
-        # only genuinely new articles hit the chat model — and at most
-        # `max_new_scored` of those per run (the rest wait for the next run).
-        read_ids = _load_read_ids()
-        fresh = [a for a in fresh if a['id'] not in read_ids]
-        prev_by_id = {a['id']: a for a in _load_prev_digest_articles()
-                      if isinstance(a, dict) and a.get('id')}
-        emb_index_prev = _load_embeddings_index()
-        hard_max = cfg['retain_hard_max_age_hours']
-
-        def _blocked(title):
-            return TITLE_BLOCKLIST.search(title) or settings.is_blocked(title, user_blocklist)
-
+        # CPU budget: an article already scored in a previous run (in anyone's
+        # digest) is REUSED — score/summary/image kept, embedding taken from the
+        # stored index — so only genuinely new articles hit the chat model, and
+        # at most `max_new_scored` of those per run (the rest wait).
+        prev_by_id, emb_index_prev = {}, {}
+        for inp in inputs:
+            for a in inp['prev']:
+                prev_by_id.setdefault(a['id'], a)
+            for k, v in inp['emb_index'].items():
+                emb_index_prev.setdefault(k, v)
+        fresh_ids = {a['id'] for a in fresh}
         new_articles, reused = [], []
         for a in fresh:
-            prev = prev_by_id.get(a['id'])
-            if prev is not None:
-                reused.append(prev)
-            else:
-                new_articles.append(a)
+            (reused if a['id'] in prev_by_id else new_articles).append(a)
         to_score, deferred_count = select_new_for_scoring(new_articles, cfg['max_new_scored'])
-        fresh_ids = {a['id'] for a in fresh}
-        carried = []
-        for aid, a in prev_by_id.items():
-            if aid in read_ids or aid in fresh_ids:
-                continue
-            # Re-apply the blocklist to carried stories so a keyword you add
-            # later removes a story already in the digest on the next run —
-            # otherwise carry-forward would keep showing it indefinitely.
-            if _blocked(a.get('title', '')):
-                continue
-            age = _age_hours(a.get('published_at'))
-            if age is not None and age >= hard_max:
-                continue
-            carried.append(a)
-        if carried:
-            log(f'carrying forward {len(carried)} unread '
-                f'stor{"y" if len(carried) == 1 else "ies"}')
+        carried_ids = {a['id'] for inp in inputs for a in inp['prev']
+                       if a['id'] not in inp['read_ids']} - fresh_ids
         log(f'parsed {len(fresh)} fresh articles: {len(new_articles)} new, '
             f'{len(reused)} already scored; scoring {len(to_score)} '
             f'(budget {cfg["max_new_scored"]}, deferred {deferred_count})')
-        if not to_score and not carried and not reused:
+        if not to_score and not carried_ids and not reused:
             return False
         new_count = len(new_articles)
 
-        # Score + embed, using the UI-selected models. New articles get a full
-        # enrich; reused/carried ones only need an embedding (usually cached).
+        # Score + embed, using the admin-selected models. New articles get a
+        # full enrich; reused/carried ones only need an embedding (usually cached).
+        # Single-user: the scorer prompt carries the reader's interests, as
+        # before. Multi-user: one neutral score per article; each user's
+        # interests are applied afterwards by embedding (apply_interest).
         _set_status(phase='scoring')
         chat_model, embed_model = cfg['ollama_model'], cfg['embed_model']
-        categories = settings.load_categories()
-        system_prompt = build_system_prompt(categories)
+        if multi:
+            all_cats = OrderedDict()
+            for inp in inputs:
+                with users.as_user(inp['user']):
+                    for c in settings.load_categories():
+                        all_cats.setdefault(c['key'], c)
+            categories = list(all_cats.values())
+            system_prompt = build_neutral_prompt(categories)
+        else:
+            categories = settings.load_categories()
+            system_prompt = build_system_prompt(categories)
         valid_cats = [c['key'] for c in categories]
         embed_cache = EmbedCache()
 
         def _enrich(article):
             return enrich(article, chat_model, embed_model, system_prompt, valid_cats, embed_cache)
 
-        scored = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=cfg['score_concurrency']) as ex:
             scored = list(ex.map(_enrich, to_score))
-        keep_prev = [dict(a) for a in reused + carried]
+        keep_prev = [dict(prev_by_id[i]) for i in ({a['id'] for a in reused} | carried_ids)]
         if keep_prev:
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg['score_concurrency']) as ex:
                 scored.extend(ex.map(lambda a: _reembed(a, embed_model, emb_index_prev, embed_cache),
                                      keep_prev))
         reused_count = len(reused)
+        for a in scored:
+            a.setdefault('base_score', a.get('score', 0.0))
+            a.setdefault('llm_category', a.get('category'))
+        pool_by_id = {a['id']: a for a in scored}
 
         # Ollama health for this run: fallbacks (Ollama errored → default score),
         # average chat latency (high ≈ running on CPU), and whether the chat
@@ -1344,61 +1527,31 @@ def run_once():
         log(f'ollama: {scored_count - score_fallbacks}/{scored_count} scored, '
             f'avg {avg_score_ms}ms/story, gpu_ratio={gpu_ratio}')
 
-        # Semantic blocklist (drop articles close to a "topic to avoid").
-        scored = semantic_block(scored, cfg['block_topics'],
-                                cfg['block_topic_threshold'], embed_model)
-        # Personalization: implicit taste (saves/opens) plus explicit likes /
-        # dislikes scored against multiple examples, and a separate, smaller
-        # publisher affinity.
-        apply_taste(scored, embed_model, cfg['taste_weight'], embed_cache)
+        # Per-user digests. One user's failure never blocks the others.
         _set_status(phase='personalizing')
-        positives, negatives = load_feedback_examples(embed_model, embed_cache)
-        apply_feedback(scored, positives, negatives,
-                       cfg['feedback_like_weight'], cfg['feedback_dislike_weight'],
-                       cfg['feedback_cap'], cfg['source_affinity_weight'])
+        failures = []
+        for inp in inputs:
+            user = inp['user']
+            if multi and not user.get('legacy') and users.get(user['id']) is None:
+                continue        # deleted while this run was in progress
+            with users.as_user(user):
+                try:
+                    arts, n_clusters = build_user_digest(inp, fresh, pool_by_id, embed_model,
+                                                         embed_cache, multi)
+                except Exception as exc:
+                    failures.append(f'{user.get("username")}: {exc}')
+                    log(f'digest for {user.get("username")} failed: {exc}')
+                    continue
+            article_count += len(arts)
+            clusters += n_clusters
+            if multi:
+                log(f'{user.get("username")}: {len(arts)} articles in {n_clusters} clusters')
         embed_cache.save()
-
-        log('clustering')
-        _set_status(phase='clustering')
-        scored = cluster(scored, cfg['sim_threshold'], cfg['boost_cap'], cfg['boost_k'])
-
-        # Keep a copy of each article's embedding (keyed by id) before they're
-        # stripped from the digest — semantic search ranks against these.
-        emb_index = {a['id']: a['embedding'] for a in scored if a.get('embedding')}
-
-        # Drop transient fields; sort by boosted score (matches client order).
-        for a in scored:
-            a.pop('embedding', None)
-            a.pop('_score_ok', None)
-            a.pop('_score_ms', None)
-            a.pop('_enrich_ms', None)
-        scored.sort(key=rank_score, reverse=True)
-
-        # Retention: rank-weighted lifespan inside the [floor, ceiling] band.
-        pool_size = len(scored)
-        scored = apply_retention(scored, cfg)
-        if len(scored) != pool_size:
-            log(f'retention kept {len(scored)}/{pool_size} articles')
-
-        clusters = len({a['cluster_id'] for a in scored})
-        article_count = len(scored)
-        _atomic_write_json(DIGEST_FILE, {
-            'generated_at': datetime.now(timezone.utc).isoformat(),
-            'article_count': article_count,
-            'articles': scored,
-        })
-        # Embeddings index, scoped to exactly the retained digest, for /search.
-        kept_ids = {a['id'] for a in scored}
-        _atomic_write_json(EMBEDDINGS_FILE, {
-            'generated_at': datetime.now(timezone.utc).isoformat(),
-            'model': embed_model,
-            'vectors': {i: v for i, v in emb_index.items() if i in kept_ids},
-        })
-        # Best-effort copy to the corpus archive for the offline Clustering
-        # Bench (off unless BENCH_CAPTURE_ENABLED). Never raises; the digest
-        # and the feed are unaffected if it fails. See corpus_archive.py.
-        corpus_archive.archive_articles(scored, emb_index, embed_model, cfg, log=log)
-        log(f'wrote {article_count} articles in {clusters} clusters -> {DIGEST_FILE} '
+        if failures and len(failures) == len(inputs):
+            raise RuntimeError('; '.join(failures))
+        if failures:
+            error = '; '.join(failures)
+        log(f'wrote {article_count} articles in {clusters} clusters for {user_count} user(s) '
             f'(avg {avg_enrich_ms}ms/new article)')
         _set_status(article_count=article_count)
         ok = True
@@ -1420,6 +1573,7 @@ def run_once():
             'duration_s': round(dur, 1) if dur is not None else None,
             'status': 'ok' if ok else ('failed' if error else 'empty'),
             'feed_count': feed_count,
+            'user_count': user_count,
             'new_count': new_count,
             'article_count': article_count,
             'clusters': clusters,
@@ -1508,7 +1662,7 @@ def warm_feedback_embeddings_async():
             log(f'feedback profile warmed: {len(pos)} likes / {len(neg)} dislikes embedded')
         except Exception as exc:
             log(f'feedback warm-up failed: {exc}')
-    threading.Thread(target=_work, name='feedback-warm', daemon=True).start()
+    users.spawn(_work, name='feedback-warm')
 
 
 def benchmark(n=5):

@@ -24,6 +24,7 @@ import netsafe
 import pipeline
 import preferences
 import settings
+import users
 
 ONBOARDING_POOL_FILE = os.environ.get('ONBOARDING_POOL_FILE', '/data/onboarding_pool.json')
 POOL_LOOKBACK_HOURS = int(os.environ.get('ONBOARDING_LOOKBACK_HOURS', '168'))
@@ -144,7 +145,7 @@ def _feeds_key(feeds):
 
 def _load_pool():
     try:
-        with open(ONBOARDING_POOL_FILE, 'r', encoding='utf-8') as fh:
+        with open(users.path(ONBOARDING_POOL_FILE), 'r', encoding='utf-8') as fh:
             d = json.load(fh)
         return d if isinstance(d, dict) else None
     except Exception:
@@ -217,7 +218,7 @@ def refresh_pool(feeds=None, fetch=None):
     pool = {'fetchedAt': _now_iso(), 'fetchedTs': time.time(), 'feedsKey': _feeds_key(feeds),
             'feedErrors': errors, 'articles': out}
     try:
-        _atomic_write(ONBOARDING_POOL_FILE, pool)
+        _atomic_write(users.path(ONBOARDING_POOL_FILE), pool)
     except Exception as exc:
         pipeline.log(f'onboarding pool write failed: {exc}')
     return pool

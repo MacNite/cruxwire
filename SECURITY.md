@@ -1,16 +1,24 @@
 # Security Policy
 
-Cruxwire is a **self-hosted, single-user** application with **no authentication**. Its security model
-is "the network is trusted" - it is built to run on a private network (a homelab LAN, a Tailscale /
-WireGuard tailnet, or `localhost`), **not** on the public internet.
+Cruxwire is a **self-hosted** application. By default (`AUTH_MODE=none`) it is **single-user with no
+authentication** and its security model is "the network is trusted" - it is built to run on a private
+network (a homelab LAN, a Tailscale / WireGuard tailnet, or `localhost`), **not** on the public
+internet. With `AUTH_MODE=local` it has user accounts (see the README's *User accounts* section).
 
 ## Threat model - read this before you deploy
 
-- **No login, no authorization.** Every endpoint - including the ones that change settings, feeds, and
+- **No login, no authorization (default `AUTH_MODE=none`).** Every endpoint - including the ones that change settings, feeds, and
   categories and trigger pipeline runs - is reachable by anyone who can reach the port. **Do not expose
   port 8090 directly to the internet.** For remote access, put it behind a reverse proxy that adds
   authentication (Caddy/nginx basic auth, [Authelia](https://www.authelia.com),
   [Tailscale](https://tailscale.com), Cloudflare Access, …).
+- **With accounts (`AUTH_MODE=local`).** Every endpoint except the login page and static icons needs a
+  session. Sessions are random tokens in an `HttpOnly`, `SameSite=Lax` cookie (only their SHA-256 is
+  stored), passwords are PBKDF2-SHA256, failed logins are throttled per username and client address,
+  and global settings / user management are admin-only. The app itself serves plain HTTP - terminate
+  TLS in a reverse proxy before exposing it beyond a trusted network. Users are isolated from each
+  other's data, but all of them share the model, the fetch pipeline and the server, so any user can
+  trigger refreshes and add feeds the server will fetch.
 - **CSRF guard, no rate limiting beyond refresh.** Mutating requests with a cross-site `Origin` are
   refused and CORS is off by default, but anything that can reach the port without a browser can still
   call the API. Manual refreshes can't overlap (409) and have a cooldown (429).

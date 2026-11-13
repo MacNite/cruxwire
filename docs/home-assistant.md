@@ -50,8 +50,12 @@ stays blank.
 
 ## Keep it private
 
-Cruxwire has no login. Keep it on your LAN/VPN (Tailscale, WireGuard) or behind an authenticated
-reverse proxy. Note that an auth proxy in front of an iframe needs a session the browser already has
+By default Cruxwire has no login. Keep it on your LAN/VPN (Tailscale, WireGuard) or behind an
+authenticated reverse proxy.
+
+With user accounts on (`AUTH_MODE=local`), sign in once inside the card. If Home Assistant and
+Cruxwire are on different origins, the browser drops the default `SameSite=Lax` session cookie inside
+the iframe: serve Cruxwire over HTTPS and set `COOKIE_SAMESITE=none` so the card stays signed in. Note that an auth proxy in front of an iframe needs a session the browser already has
 (e.g. log in to the proxy once in the same browser/app); forward-auth with cookies scoped to your
 domain works well, HTTP basic auth prompts inside iframes are unreliable on mobile.
 

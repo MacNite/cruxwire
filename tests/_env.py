@@ -18,14 +18,22 @@ for var, name in [('STATE_FILE', 'state.json'), ('DIGEST_FILE', 'digest.json'),
     os.environ[var] = os.path.join(DATA, name)
 os.environ['STATIC_DIR'] = ROOT
 os.environ.setdefault('OLLAMA_HOST', 'http://127.0.0.1:9')   # nothing listens: Ollama "down"
+os.environ['PBKDF2_ITERATIONS'] = '1000'                       # fast password hashing in tests
 
 
 def reset():
     """Remove every data file so each test starts clean."""
+    import shutil
     import images
+    import users
     for f in os.listdir(DATA):
+        p = os.path.join(DATA, f)
+        if os.path.isdir(p):
+            shutil.rmtree(p, ignore_errors=True)
+            continue
         try:
-            os.unlink(os.path.join(DATA, f))
+            os.unlink(p)
         except OSError:
             pass
     images._cache = None
+    users._failures.clear()
