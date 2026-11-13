@@ -145,7 +145,8 @@ class AuthServerTests(unittest.TestCase):
 
     def test_setup_then_login_required(self):
         st, me, _ = self.req('GET', '/auth/me')
-        self.assertEqual(me, {'mode': 'local', 'user': None, 'needsSetup': True})
+        self.assertEqual(me, {'mode': 'local', 'user': None, 'needsSetup': True,
+                              'localLogin': 'on', 'oidc': None})
         st, _, r = self.req('GET', '/')
         self.assertEqual((st, r.getheader('Location')), (302, '/login'))
         st, body, _ = self.req('GET', '/digest.json')

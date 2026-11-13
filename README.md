@@ -59,7 +59,8 @@ No build step, **no Python dependencies** (pure stdlib), no external services ot
   usable offline from local cache.
 - **Optional user accounts** - `AUTH_MODE=local` adds login and an admin-managed user list; every
   user gets private feeds, categories, likes and their own ranked digest, while each article is
-  still fetched and scored by the model only once. See [User accounts](#user-accounts).
+  still fetched and scored by the model only once. Single sign-on via OpenID Connect (e.g.
+  authentik) is built in. See [User accounts](#user-accounts).
 
 ---
 
@@ -161,7 +162,8 @@ host's LAN IP.)
 ## User accounts
 
 By default (`AUTH_MODE=none`) Cruxwire is single-user with no login, exactly as before. Set
-`AUTH_MODE=local` to turn on accounts:
+`AUTH_MODE=local` to turn on accounts (or `AUTH_MODE=oidc` for accounts with
+[single sign-on](#single-sign-on-oidc--authentik)):
 
 ```yaml
     environment:
@@ -199,6 +201,51 @@ By default (`AUTH_MODE=none`) Cruxwire is single-user with no login, exactly as 
 
 Data layout with accounts: `/data/users.json` (accounts), `/data/sessions.json`, and
 `/data/users/<id>/` for each user other than the owner (the owner keeps the original files in `/data`).
+
+### Single sign-on (OIDC / authentik)
+
+Cruxwire speaks standard OpenID Connect (authorization code + PKCE), so any provider works; these
+steps are for [authentik](https://goauthentik.io):
+
+1. **Applications → Providers → Create → OAuth2/OpenID Provider**
+   - *Client type*: Confidential. Note the **Client ID** and **Client Secret**.
+   - *Redirect URIs*: `https://cruxwire.example.com/auth/oidc/callback` (strict).
+   - *Signing Key*: pick a certificate (e.g. *authentik Self-signed Certificate*) so tokens are RS256.
+     (With no signing key authentik uses HS256 with the client secret - also supported.)
+   - *Scopes*: the defaults (`openid`, `email`, `profile`) - authentik's `profile` scope includes
+     the user's `groups`.
+2. **Applications → Applications → Create**, slug e.g. `cruxwire`, using that provider. Bind a policy,
+   group or user to the application to control **who may sign in at all**.
+3. Optional: create a group such as `cruxwire-admins` for people who should administer Cruxwire.
+4. Configure Cruxwire (e.g. in `.env`) and restart:
+
+```bash
+AUTH_MODE=oidc
+PUBLIC_URL=https://cruxwire.example.com
+OIDC_ISSUER=https://auth.example.com/application/o/cruxwire/
+OIDC_CLIENT_ID=<client id>
+OIDC_CLIENT_SECRET=<client secret>
+OIDC_ADMIN_GROUP=cruxwire-admins
+OIDC_BUTTON_LABEL=Sign in with authentik
+```
+
+How it behaves:
+
+- The login page shows **Sign in with authentik**. The first sign-in on a fresh install becomes the
+  admin and owner of the existing data; after that, each new person gets their own account on first
+  sign-in (`OIDC_AUTO_CREATE=false` to require an admin to set accounts up first).
+- **Roles**: with `OIDC_ADMIN_GROUP` set, membership is re-checked at every sign-in (admin ↔ user);
+  the last remaining admin is never demoted. Without it, roles are managed in *Settings → Users*.
+- **Existing password accounts** are not taken over by default. To attach them on first SSO sign-in,
+  set `OIDC_LINK_BY=username` (matching `preferred_username`) or `OIDC_LINK_BY=email` (the account's
+  email, which SSO sign-ins record, and only if authentik marks it verified). An admin can *Unlink
+  SSO* in *Settings → Users*.
+- **Passwords**: `LOCAL_LOGIN=on` (default for `AUTH_MODE=local`) keeps password sign-in for everyone
+  next to SSO; `admins` (default for `AUTH_MODE=oidc`) keeps it only as a break-glass path for admins
+  (behind *Admin sign-in with password*); `off` disables it entirely.
+- Signing out of Cruxwire ends the Cruxwire session only, not your authentik session.
+- Running Cruxwire behind a reverse proxy without `PUBLIC_URL`? Make sure it forwards `Host` and
+  `X-Forwarded-Proto`, or set `OIDC_REDIRECT_URI` explicitly - it must match the provider exactly.
 
 ---
 
@@ -290,7 +337,8 @@ next run. The pipeline, feed validation, and UI all read from this one place.
 | `GET` | `/auth/me` | Auth mode, the signed-in user (or `null`), and whether first-run setup is needed |
 | `POST` | `/auth/login` · `/auth/logout` · `/auth/setup` | Sign in `{username, password}` · sign out · create the first admin (once) |
 | `PUT` | `/auth/password` | Change your own password `{current, new}` |
-| `GET` / `POST` / `PUT` / `DELETE` | `/users` (`?id=`) | Admin: list / create `{username, password, role, display_name}` / update `{role, disabled, password, display_name}` / delete users |
+| `GET` / `POST` / `PUT` / `DELETE` | `/users` (`?id=`) | Admin: list / create `{username, password, role, display_name}` / update `{role, disabled, password, display_name, unlink_sso}` / delete users |
+| `GET` | `/auth/oidc/login?next=` · `/auth/oidc/callback` | Start single sign-on · provider redirect target |
 | `GET` | `/digest.json` | Current ranked digest |
 | `GET` / `PUT` | `/state` | Read / save user state (read, later, history, sourceStats) |
 | `GET` / `PUT` | `/settings` | Read schema + values / save runtime settings |
@@ -363,6 +411,7 @@ python pipeline.py --benchmark 5
 | [pipeline.py](pipeline.py) | Ingestion pipeline + scheduler: fetch → carry-forward → score → cluster → retain |
 | [settings.py](settings.py) | Runtime-settings schema (drives the Settings form), validation, persistence |
 | [users.py](users.py) | Accounts, password hashing, sessions, per-user data paths (`AUTH_MODE`) |
+| [oidc.py](oidc.py) | OpenID Connect SSO (authentik): discovery, PKCE, stdlib ID-token verification |
 | [preferences.py](preferences.py) | Likes/dislikes + onboarding state (`preferences.json`) |
 | [onboarding.py](onboarding.py) | Wizard backend: feed inspection, candidate pool/rotation, seeds, completion |
 | [images.py](images.py) | Preview-image resolution, URL normalisation, Google News decoding, fallbacks |

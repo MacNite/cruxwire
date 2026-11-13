@@ -15,7 +15,7 @@ WORKDIR /app
 
 # App code + bundled assets. Mutable data lives on the /data volume, not here.
 COPY server.py pipeline.py settings.py corpus_archive.py \
-     preferences.py onboarding.py images.py netsafe.py users.py digest.html login.html \
+     preferences.py onboarding.py images.py netsafe.py users.py oidc.py digest.html login.html \
      favicon.ico favicon-16x16.png favicon-32x32.png apple-touch-icon.png logo-mark.png \
      feeds.sample.json categories.sample.json ./
 COPY static/ ./static/

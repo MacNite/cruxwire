@@ -23,8 +23,9 @@ services:
       # the container runs in UTC and runs fire in the wrong local window.
       # Override via .env or your shell, e.g. TZ=America/New_York.
       TZ: ${TZ:-Europe/Berlin}
-      # User accounts: none (single user, no login) or local (accounts with
-      # private feeds/likes/digests). See README → User accounts.
+      # User accounts: none (single user, no login), local (accounts with
+      # private feeds/likes/digests) or oidc (accounts + required SSO, e.g.
+      # authentik; set the OIDC_* vars in .env). See README → User accounts.
       AUTH_MODE: ${AUTH_MODE:-none}
     volumes:
       - cruxwire-data:/data        # local named volume - no NAS share

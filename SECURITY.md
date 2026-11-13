@@ -19,6 +19,14 @@ internet. With `AUTH_MODE=local` it has user accounts (see the README's *User ac
   TLS in a reverse proxy before exposing it beyond a trusted network. Users are isolated from each
   other's data, but all of them share the model, the fetch pipeline and the server, so any user can
   trigger refreshes and add feeds the server will fetch.
+- **Single sign-on (OIDC).** Authorization-code flow with PKCE, a `state` bound to the browser by a
+  short-lived cookie, and a `nonce`; the ID token's signature (RS256 via the provider's JWKS, or
+  HS256 with the client secret), issuer, audience and expiry are verified before a session is
+  created. Redirect targets after login are restricted to same-site paths. An SSO identity never
+  takes over an existing account unless `OIDC_LINK_BY` allows it, and email linking requires a
+  verified address. With `AUTH_MODE=oidc`, passwords default to admins-only break-glass
+  (`LOCAL_LOGIN`). The identity provider is contacted directly (not through the SSRF guard), since
+  its address comes from the deployment config.
 - **CSRF guard, no rate limiting beyond refresh.** Mutating requests with a cross-site `Origin` are
   refused and CORS is off by default, but anything that can reach the port without a browser can still
   call the API. Manual refreshes can't overlap (409) and have a cooldown (429).
