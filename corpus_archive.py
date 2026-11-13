@@ -19,6 +19,8 @@ the bench's definition.
 """
 import json
 import os
+import re
+import secrets
 import tempfile
 from datetime import datetime, timezone
 
@@ -71,13 +73,15 @@ def _record(article, embedding, now, embed_model, prod_params):
     }
 
 
-def archive_articles(articles, emb_index, embed_model, cfg, log=print):
+def archive_articles(articles, emb_index, embed_model, cfg, log=print, owner=None):
     """Append this run's retained articles to the corpus archive. Best-effort:
     no-op when the flag is off, and never raises (the caller need not guard).
 
     articles: the post-retention `scored` list (what the reader sees).
     emb_index: {article_id: embedding} captured before embeddings are stripped.
     cfg:       the settings dict, for the clustering-param snapshot.
+    owner:     id of the account whose digest this is (provenance; part of the
+               file name so per-user writes in the same second never collide).
     """
     if not CAPTURE_ENABLED:
         return
@@ -94,15 +98,21 @@ def archive_articles(articles, emb_index, embed_model, cfg, log=print):
         ]
         if not rows:
             return
+        if owner:
+            for r in rows:
+                r['owner'] = owner
 
-        # Layout: corpus/day=YYYYMMDD/block=HHMM/part-HHMMSS.jsonl. One file per
+        # Layout: corpus/day=YYYYMMDD/block=HHMM/part-HHMMSS-<owner>-<rand>.jsonl. One file per
         # run (timestamped), so appends never interleave and adding a file takes
         # no lock the always-on reader holds.
         part_dir = os.path.join(
             CORPUS_DIR, 'day=%s' % now.strftime('%Y%m%d'),
             'block=%s' % _block_id(now))
         os.makedirs(part_dir, exist_ok=True)
-        path = os.path.join(part_dir, 'part-%s.jsonl' % now.strftime('%H%M%S'))
+        # Unique per write: several per-user digests can land in one second.
+        tag = re.sub(r'[^A-Za-z0-9_-]', '', str(owner or 'run'))[:32] or 'run'
+        path = os.path.join(part_dir, 'part-%s-%s-%s.jsonl' % (
+            now.strftime('%H%M%S'), tag, secrets.token_hex(4)))
 
         # Write to a temp file in the same dir, then atomically replace, so the
         # bench never sees a half-written part.

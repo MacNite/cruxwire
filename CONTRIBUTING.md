@@ -44,8 +44,14 @@ Then open `http://localhost:8090/`.
 
 ## Testing
 
-There's no automated test suite - verify changes by running the app (Docker, or the direct-run command
-above) and exercising the affected flow. Say what you tested in the PR.
+Run the automated suite (stdlib `unittest`, no dependencies; CI runs the same command):
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Add a regression test with every fix. For UI changes also run the app (Docker, or the direct-run
+command above) and exercise the affected flow. Say what you tested in the PR.
 
 ## Design docs
 

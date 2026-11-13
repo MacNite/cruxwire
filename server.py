@@ -50,10 +50,12 @@ authenticated reverse proxy; with accounts, still terminate TLS in a proxy.
 """
 import concurrent.futures
 import json
+import math
 import os
 import re
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -62,6 +64,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlencode, urlparse, parse_qs
 
+import article_ids
 import images
 import oidc
 import onboarding
@@ -85,6 +88,82 @@ CORS_ALLOW_ORIGIN = os.environ.get('CORS_ALLOW_ORIGIN', '').strip()
 FRAME_ANCESTORS = os.environ.get('FRAME_ANCESTORS', '').strip()
 MAX_BODY_BYTES = int(os.environ.get('MAX_BODY_BYTES', str(4 * 1024 * 1024)))   # /state etc.
 SMALL_BODY_BYTES = 64 * 1024                                                   # votes, onboarding
+
+# ── Load limits ──────────────────────────────────────────────────────
+# Idle-socket timeout per connection, and an overall deadline for reading a
+# request body (a client trickling bytes cannot pin a handler thread forever).
+REQUEST_TIMEOUT_S = float(os.environ.get('REQUEST_TIMEOUT_S', '30'))
+BODY_READ_DEADLINE_S = float(os.environ.get('BODY_READ_DEADLINE_S', '30'))
+# Concurrent request threads; beyond this new connections get 503 at once.
+MAX_CONCURRENT_REQUESTS = int(os.environ.get('MAX_CONCURRENT_REQUESTS', '64'))
+# Interactive Ollama work (search, TL;DR) allowed to run/wait at once across all
+# users; more gets 503 instead of piling up threads behind the model semaphore.
+MAX_INTERACTIVE_MODEL_JOBS = int(os.environ.get('MAX_INTERACTIVE_MODEL_JOBS', '8'))
+# Per-user rate limits (requests per minute) for the expensive endpoints.
+SEARCH_PER_MINUTE = int(os.environ.get('SEARCH_PER_MINUTE', '30'))
+TLDR_PER_MINUTE = int(os.environ.get('TLDR_PER_MINUTE', '10'))
+# Feed imports that may validate (network fan-out) at the same time.
+MAX_CONCURRENT_IMPORTS = int(os.environ.get('MAX_CONCURRENT_IMPORTS', '2'))
+
+_interactive_sem = threading.BoundedSemaphore(max(1, MAX_INTERACTIVE_MODEL_JOBS))
+_import_sem = threading.BoundedSemaphore(max(1, MAX_CONCURRENT_IMPORTS))
+_rate_lock = threading.Lock()
+_rate_hits = {}         # (bucket, user id) -> [monotonic timestamps]
+
+
+def rate_limited(bucket, uid, per_minute):
+    """Sliding one-minute window per (bucket, user). True = refuse."""
+    if per_minute <= 0:
+        return False
+    now = time.monotonic()
+    with _rate_lock:
+        hits = [t for t in _rate_hits.get((bucket, uid), []) if now - t < 60]
+        if len(hits) >= per_minute:
+            _rate_hits[(bucket, uid)] = hits
+            return True
+        hits.append(now)
+        _rate_hits[(bucket, uid)] = hits
+        if len(_rate_hits) > 10000:     # forget idle users
+            for k in [k for k, v in _rate_hits.items() if not v or now - v[-1] >= 60]:
+                _rate_hits.pop(k, None)
+    return False
+
+
+class BodyTimeout(Exception):
+    pass
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a cap on concurrent handler threads: when all
+    slots are busy a new connection gets an immediate 503 instead of another
+    thread (bounded memory under a connection flood)."""
+    daemon_threads = True
+
+    def __init__(self, *a, max_concurrent=None, **kw):
+        self._slots = threading.BoundedSemaphore(max(1, max_concurrent or MAX_CONCURRENT_REQUESTS))
+        super().__init__(*a, **kw)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            try:
+                request.sendall(b'HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n'
+                                b'Retry-After: 2\r\nConnection: close\r\nContent-Length: 30\r\n\r\n'
+                                b'{"error":"Server is busy"}    ')
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
 
 # History retention is a runtime-editable setting now (see settings.py); the env
 # var there remains the default. Read Later is curated and never aged out.
@@ -259,9 +338,10 @@ def _normalize_source_stats(raw):
         coerced = {}
         for key in ('opens', 'saves', 'dismisses'):
             try:
-                coerced[key] = float(counters.get(key, 0) or 0)
+                val = float(counters.get(key, 0) or 0)
             except (TypeError, ValueError):
-                coerced[key] = 0.0
+                val = 0.0
+            coerced[key] = val if math.isfinite(val) else 0.0
         out[source] = coerced
     return out
 
@@ -273,6 +353,20 @@ def _normalize_learning(raw):
     return {'lastDecayAt': last if isinstance(last, str) else None}
 
 
+def _as_list(v):
+    """A JSON list as-is; anything else (string, number, object) as []."""
+    return v if isinstance(v, list) else []
+
+
+def _valid_saved_item(item):
+    """A Read Later / History entry: an object whose id/url/title/source are
+    strings when present (they are rendered and compared as strings)."""
+    if not isinstance(item, dict) or not isinstance(item.get('id'), str):
+        return False
+    return all(item.get(k) is None or isinstance(item.get(k), str)
+               for k in ('url', 'title', 'source', 'category', 'savedAt', 'viewedAt'))
+
+
 def normalize_payload(payload):
     """Coerce incoming PUT into the expected shape; ignore unknown fields."""
     vs_default = DEFAULT_STATE['viewState']
@@ -280,10 +374,10 @@ def normalize_payload(payload):
     view_state = {**vs_default, **{k: raw_vs[k] for k in vs_default if k in raw_vs}}
 
     return {
-        'updatedAt': payload.get('updatedAt') or None,
-        'readIds': list(payload.get('readIds') or []),
-        'later': list(payload.get('later') or []),
-        'history': list(payload.get('history') or []),
+        'updatedAt': payload.get('updatedAt') if isinstance(payload.get('updatedAt'), str) else None,
+        'readIds': _as_list(payload.get('readIds')),
+        'later': [i for i in _as_list(payload.get('later')) if _valid_saved_item(i)],
+        'history': [i for i in _as_list(payload.get('history')) if _valid_saved_item(i)],
         'viewState': view_state,
         'sourceStats': _normalize_source_stats(payload.get('sourceStats')),
         'learning': _normalize_learning(payload.get('learning')),
@@ -519,11 +613,16 @@ def settings_payload():
     }
 
 
-def ranked_articles(category='all', offset=0, limit=20):
+def ranked_articles(category='all', offset=0, limit=20, exclude=None):
     """The digest as a ranked feed page: unread and unsaved stories only, one
     representative per same-story cluster, re-ranked by the composite score
     with topic/publisher diversity and the exploration share. Paging walks
-    further down the same ranking, so 'Discover more' never repeats items."""
+    further down the same ranking, so 'Discover more' never repeats items.
+
+    `exclude` (ids the client already shows) is the stable way to page: the
+    unread set shrinks as the reader marks stories read, so a numeric offset
+    into it would skip unseen stories. With `exclude`, the page is simply the
+    top `limit` ranked stories not yet shown (offset is ignored)."""
     try:
         with open(users.path(DIGEST_FILE), 'r', encoding='utf-8') as fh:
             digest = json.load(fh)
@@ -554,6 +653,9 @@ def ranked_articles(category='all', offset=0, limit=20):
     cfg = settings.load()
     ranked = pipeline.diversify(list(reps.values()), explore_share=cfg['exploration_share'])
     votes = preferences.votes_map()
+    if exclude is not None:
+        ranked = [a for a in ranked if a['id'] not in exclude]
+        offset = 0
     total = len(ranked)
     offset = max(0, offset)
     limit = max(1, min(100, limit))
@@ -586,6 +688,7 @@ class BodyTooLarge(Exception):
 class StateHandler(BaseHTTPRequestHandler):
     server_version = 'Cruxwire'
     sys_version = ''
+    timeout = REQUEST_TIMEOUT_S     # idle socket timeout (StreamRequestHandler.setup)
 
     # ── response helpers ─────────────────────────────────────────────
     def _cors(self):
@@ -669,7 +772,7 @@ class StateHandler(BaseHTTPRequestHandler):
             return None, 'Invalid Content-Length'
         if length > max_bytes:
             raise BodyTooLarge()
-        body = self.rfile.read(length) if length else b''
+        body = self._read_body(length) if length else b''
         try:
             payload = json.loads(body.decode('utf-8') if body else '{}')
         except Exception as exc:
@@ -679,6 +782,21 @@ class StateHandler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             return None, 'Payload must be an object'
         return payload, None
+
+    def _read_body(self, length):
+        """Read exactly `length` bytes within BODY_READ_DEADLINE_S overall."""
+        deadline = time.monotonic() + BODY_READ_DEADLINE_S
+        chunks, got = [], 0
+        while got < length:
+            if time.monotonic() > deadline:
+                raise BodyTimeout()
+            chunk = self.rfile.read1(min(65536, length - got)) if hasattr(self.rfile, 'read1') \
+                else self.rfile.read(min(65536, length - got))
+            if not chunk:
+                raise BodyTimeout()     # client closed before sending the body
+            chunks.append(chunk)
+            got += len(chunk)
+        return b''.join(chunks)
 
     def _body_or_400(self, **kw):
         """Read a JSON object body; on error reply 400 and return None."""
@@ -715,7 +833,7 @@ class StateHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self._cors()
         self.send_header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Cruxwire-Account')
         self.end_headers()
 
     # ── auth ─────────────────────────────────────────────────────────
@@ -843,10 +961,18 @@ class StateHandler(BaseHTTPRequestHandler):
         return self.client_address[0] if self.client_address else ''
 
     def _me_payload(self):
-        return {'mode': users.AUTH_MODE, 'user': users.public(self.user),
-                'needsSetup': users.needs_setup(),
-                'localLogin': users.LOCAL_LOGIN if users.enabled() else None,
-                'oidc': {'enabled': True, 'label': oidc.OIDC_BUTTON_LABEL} if oidc.enabled() else None}
+        out = {'mode': users.AUTH_MODE, 'user': users.public(self.user),
+               'needsSetup': users.needs_setup(),
+               'localLogin': users.LOCAL_LOGIN if users.enabled() else None,
+               'oidc': {'enabled': True, 'label': oidc.OIDC_BUTTON_LABEL} if oidc.enabled() else None}
+        if self.user is not None:
+            # The History view ages items by this setting (not a hardcoded 3).
+            try:
+                with users.as_user(self.user):
+                    out['historyRetentionDays'] = settings.load()['history_retention_days']
+            except Exception:
+                pass
+        return out
 
     def _start_session(self, user, status=200):
         token = users.create_session(user['id'])
@@ -902,8 +1028,12 @@ class StateHandler(BaseHTTPRequestHandler):
             if payload is None:
                 return True
             try:
-                user = users.create_user(payload.get('username'), payload.get('password'), 'admin',
-                                         payload.get('display_name'))
+                user = users.create_first_admin(payload.get('username'), payload.get('password'),
+                                                payload.get('display_name'))
+            except users.SetupClosed:
+                # Someone else completed setup while this request was in flight.
+                self._json(409, {'error': 'Setup is already complete.'})
+                return True
             except ValueError as exc:
                 self._json(400, {'error': str(exc)})
                 return True
@@ -983,6 +1113,18 @@ class StateHandler(BaseHTTPRequestHandler):
             self._json(400, {'error': str(exc)})
         return True
 
+    def _model_job_allowed(self, bucket, per_minute):
+        """Per-user rate limit + global slot for an interactive model job. On
+        success the caller owns one _interactive_sem slot and must release it."""
+        uid = (self.user or users.OWNER_PSEUDO).get('id')
+        if rate_limited(bucket, uid, per_minute):
+            self._json(429, {'error': 'Too many requests. Try again in a minute.'})
+            return False
+        if not _interactive_sem.acquire(blocking=False):
+            self._json(503, {'error': 'The model is busy. Try again shortly.'})
+            return False
+        return True
+
     def _is_public_asset(self, path):
         return path.lstrip('/') in ICON_FILES or bool(_FALLBACK_RE.match(path))
 
@@ -1002,14 +1144,42 @@ class StateHandler(BaseHTTPRequestHandler):
                 else:
                     self._json(401, {'error': 'Login required', 'login': '/login'})
                 return
+            claimed = (self.headers.get('X-Cruxwire-Account') or '').strip()
+            if claimed and self.user is not None and claimed != self.user.get('id'):
+                # The page was loaded for another account than the session
+                # cookie now belongs to (signed in as someone else in another
+                # tab). Refuse rather than read/write the wrong account.
+                self._json(409, {'error': 'You are signed in as a different account in this '
+                                          'browser. Reload the page.', 'accountChanged': True})
+                return
             with users.as_user(self.user or users.OWNER_PSEUDO):
                 if self.user is not None and self._account_routes(method, path, parse_qs(parsed.query)):
                     return
                 getattr(self, '_' + method.lower())()
         except BodyTooLarge:
             self._json(413, {'error': 'Request body too large'})
-        except BrokenPipeError:
+        except (BodyTimeout, TimeoutError):
+            self.close_connection = True
+            try:
+                self._json(408, {'error': 'Request body not received in time'})
+            except OSError:
+                pass
+        except users.AccountStoreError as exc:
+            # Fail closed: never fall back to "no accounts" (which would reopen
+            # first-admin setup). An operator has to restore users.json.
+            print(f'account store error: {exc}', flush=True)
+            self._json(503, {'error': 'Account storage is unavailable. An administrator must '
+                                      'restore users.json (see the server log).'})
+        except (BrokenPipeError, ConnectionResetError):
             pass
+        except Exception as exc:
+            # A malformed request (or a bug) must yield an error response, not
+            # a dropped connection with a traceback on stderr.
+            print(f'{method} {self.path[:200]} failed: {type(exc).__name__}: {exc}', flush=True)
+            try:
+                self._json(500, {'error': 'Internal error'})
+            except OSError:
+                pass
 
     def do_GET(self):
         self._dispatch('GET')
@@ -1072,7 +1242,13 @@ class StateHandler(BaseHTTPRequestHandler):
                 thr = float(q1('threshold'))
             except ValueError:
                 thr = pipeline.SEARCH_THRESHOLD
-            results = pipeline.semantic_search(q, threshold=thr)
+            if q.strip() and not self._model_job_allowed('search', SEARCH_PER_MINUTE):
+                return
+            try:
+                results = pipeline.semantic_search(q, threshold=thr)
+            finally:
+                if q.strip():
+                    _interactive_sem.release()
             self._json(200, {'query': q, 'results': results})
             return
         if path == '/feeds/check':
@@ -1111,7 +1287,13 @@ class StateHandler(BaseHTTPRequestHandler):
             except ValueError:
                 self._json(400, {'error': 'offset/limit must be integers'})
                 return
-            self._json(200, ranked_articles(q1('category', 'all')[:40], offset, limit))
+            exclude = None
+            if 'exclude' in qs:
+                exclude = {i for i in ','.join(qs['exclude']).split(',') if i}
+                if len(exclude) > 5000:
+                    self._json(400, {'error': 'Too many excluded ids'})
+                    return
+            self._json(200, ranked_articles(q1('category', 'all')[:40], offset, limit, exclude))
             return
         m = _FALLBACK_RE.match(path)
         if m:
@@ -1261,7 +1443,12 @@ class StateHandler(BaseHTTPRequestHandler):
             if not isinstance(url, str) or not url.startswith('http'):
                 self._json(400, {'error': 'valid url required'})
                 return
-            result = pipeline.generate_tldr(url, str(title)[:300])
+            if not self._model_job_allowed('tldr', TLDR_PER_MINUTE):
+                return
+            try:
+                result = pipeline.generate_tldr(url, str(title)[:300])
+            finally:
+                _interactive_sem.release()
             if result is None:
                 self._json(502, {'error': 'Could not summarise (Ollama may be down)'})
                 return
@@ -1276,7 +1463,14 @@ class StateHandler(BaseHTTPRequestHandler):
                 self._json(400, {'error': 'feeds[] is required'})
                 return
             do_validate = payload.get('validate', True) is not False
-            self._json(200, import_feeds(items[:1000], do_validate))
+            if not _import_sem.acquire(blocking=False):
+                self._json(429, {'error': 'Another feed import is running. Try again shortly.'})
+                return
+            try:
+                result = import_feeds(items[:1000], do_validate)
+            finally:
+                _import_sem.release()
+            self._json(200, result)
             return
         if path != '/feeds':
             self.send_error(404, 'Not Found')
@@ -1397,6 +1591,24 @@ def migrate_preferences():
         print(f'preferences initialised (existing user: {existing})', flush=True)
 
 
+def migrate_article_ids():
+    """One-time (idempotent) rewrite of legacy 32-bit article ids to the new
+    collision-resistant ids, for every account's files."""
+    accounts = [users.OWNER_PSEUDO] + ([u for u in users.list_users() if not u.get('legacy')]
+                                       if users.enabled() else [])
+    for u in accounts:
+        with users.as_user(u):
+            try:
+                n = article_ids.migrate_current_user(
+                    DIGEST_FILE, pipeline.EMBEDDINGS_FILE, STATE_FILE,
+                    preferences.PREFERENCES_FILE, onboarding.ONBOARDING_POOL_FILE)
+            except Exception as exc:
+                print(f'article id migration failed for {u.get("username")}: {exc}', flush=True)
+                continue
+        if n:
+            print(f'migrated {n} article ids to the new format ({u.get("username")})', flush=True)
+
+
 if __name__ == '__main__':
     problems = oidc.config_problems()
     if problems:
@@ -1404,13 +1616,17 @@ if __name__ == '__main__':
     if oidc.enabled():
         print(f'auth ({users.AUTH_MODE}): single sign-on via {oidc.OIDC_ISSUER} '
               f'(password sign-in: {users.LOCAL_LOGIN})', flush=True)
-    msg = users.bootstrap()
+    try:
+        msg = users.bootstrap()
+    except users.AccountStoreError as exc:
+        raise SystemExit(f'auth ({users.AUTH_MODE}): refusing to start: {exc}')
     if msg:
         print(f'auth ({users.AUTH_MODE}): {msg}', flush=True)
     seed_feeds_if_missing()
     seed_categories_if_missing()
     migrate_preferences()
+    migrate_article_ids()
     pipeline.start_background(run_now=True)
-    server = ThreadingHTTPServer(('0.0.0.0', PORT), StateHandler)
+    server = BoundedThreadingHTTPServer(('0.0.0.0', PORT), StateHandler)
     print(f'Cruxwire server listening on http://0.0.0.0:{PORT}/', flush=True)
     server.serve_forever()

@@ -19,11 +19,13 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
+import article_ids
 import corpus_archive
 import images
 import netsafe
@@ -210,8 +212,34 @@ def ollama_ps():
 def clean_text(s):
     s = s.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>') \
          .replace('&quot;', '"').replace('&#39;', "'").replace('&apos;', "'")
-    s = re.sub(r'&#(\d+);', lambda m: chr(int(m.group(1))), s)
+    s = re.sub(r'&#(\d+);', _safe_chr, s)
     return s.strip()
+
+
+def _safe_chr(m):
+    """A numeric character reference, or U+FFFD when it is out of range
+    (a hostile feed must not be able to abort parsing with &#99999999;)."""
+    try:
+        return chr(int(m.group(1)))
+    except (ValueError, OverflowError):
+        return '\ufffd'
+
+
+def _article_url(url):
+    """A well-formed absolute http(s) URL with a host, or None. Apostrophes
+    and spaces are percent-encoded; anything with control characters or
+    markup delimiters is refused (defence in depth for the HTML views)."""
+    if not isinstance(url, str) or not url.startswith(('http://', 'https://')) or len(url) > 2048:
+        return None
+    if any(c in url for c in '<>"`\\') or any(ord(c) < 0x21 and c != ' ' for c in url):
+        return None
+    url = url.replace(' ', '%20').replace("'", '%27')
+    try:
+        p = urllib.parse.urlsplit(url)
+        p.port      # raises ValueError on a malformed port
+    except ValueError:
+        return None
+    return url if p.hostname else None
 
 
 def extract_field(xml, tag):
@@ -276,45 +304,53 @@ def parse_feed(xml, source, category, cutoff):
     tags / enclosure / inline <img> (None if the feed has none)."""
     out = []
 
-    # RSS <item> (also <item rdf:about=...> in RSS 1.0)
+    # RSS <item> (also <item rdf:about=...> in RSS 1.0), then Atom <entry>.
     for m in re.finditer(r'<item\b[^>]*>([\s\S]*?)</item>', xml, re.IGNORECASE):
-        block = m.group(1)
-        title = images.clean_text(extract_field(block, 'title'))
-        url = clean_text(extract_field(block, 'link') or extract_field(block, 'guid')).strip()
-        pub = parse_date(extract_field(block, 'pubDate')
-                         or extract_field(block, 'dc:date')) or datetime.now(timezone.utc)
-        if not title or not url.startswith('http'):
-            continue
-        if pub < cutoff:
-            continue
-        desc = extract_field(block, 'description') or extract_field(block, 'content:encoded')
-        out.append(_item(block, title, url, pub, source, category, desc))
+        try:
+            art = _parse_rss_item(m.group(1), source, category, cutoff)
+        except Exception:
+            art = None      # one malformed item never aborts the feed (or the run)
+        if art:
+            out.append(art)
 
-    # Atom <entry>
     for m in re.finditer(r'<entry\b[^>]*>([\s\S]*?)</entry>', xml, re.IGNORECASE):
-        block = m.group(1)
-        title = images.clean_text(extract_field(block, 'title'))
-        lm = (re.search(r'<link[^>]*rel=["\']alternate["\'][^>]*href=["\']([^"\']+)["\']', block, re.IGNORECASE)
-              or re.search(r'<link(?![^>]*rel=["\'](?:enclosure|self|replies)["\'])[^>]*href=["\']([^"\']+)["\']', block, re.IGNORECASE))
-        url = clean_text(lm.group(1) if lm else extract_field(block, 'id')).strip()
-        pub = parse_date(extract_field(block, 'published')
-                         or extract_field(block, 'updated')) or datetime.now(timezone.utc)
-        if not title or not url.startswith('http'):
-            continue
-        if pub < cutoff:
-            continue
-        desc = extract_field(block, 'summary') or extract_field(block, 'content')
-        out.append(_item(block, title, url, pub, source, category, desc))
-
+        try:
+            art = _parse_atom_entry(m.group(1), source, category, cutoff)
+        except Exception:
+            art = None
+        if art:
+            out.append(art)
     return out
 
 
-def stable_id(url):
-    """Deterministic 8-char hex id from the URL (stable within a digest)."""
-    h = 0
-    for ch in url:
-        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
-    return format(h, '08x')[:8]
+def _parse_rss_item(block, source, category, cutoff):
+    title = images.clean_text(extract_field(block, 'title'))
+    url = clean_text(extract_field(block, 'link') or extract_field(block, 'guid')).strip()
+    pub = parse_date(extract_field(block, 'pubDate')
+                     or extract_field(block, 'dc:date')) or datetime.now(timezone.utc)
+    url = _article_url(url)
+    if not title or not url or pub < cutoff:
+        return None
+    desc = extract_field(block, 'description') or extract_field(block, 'content:encoded')
+    return _item(block, title, url, pub, source, category, desc)
+
+
+def _parse_atom_entry(block, source, category, cutoff):
+    title = images.clean_text(extract_field(block, 'title'))
+    lm = (re.search(r'<link[^>]*rel=["\']alternate["\'][^>]*href=["\']([^"\']+)["\']', block, re.IGNORECASE)
+          or re.search(r'<link(?![^>]*rel=["\'](?:enclosure|self|replies)["\'])[^>]*href=["\']([^"\']+)["\']', block, re.IGNORECASE))
+    url = clean_text(lm.group(1) if lm else extract_field(block, 'id')).strip()
+    pub = parse_date(extract_field(block, 'published')
+                     or extract_field(block, 'updated')) or datetime.now(timezone.utc)
+    url = _article_url(url)
+    if not title or not url or pub < cutoff:
+        return None
+    desc = extract_field(block, 'summary') or extract_field(block, 'content')
+    return _item(block, title, url, pub, source, category, desc)
+
+
+# Collision-resistant id from the URL (see article_ids for the migration).
+stable_id = article_ids.stable_id
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -535,6 +571,10 @@ def enrich(article, chat_model, embed_model, system_prompt, valid_cats, embed_ca
         'description': article.get('description') or '',
         'published_at': article['published_at'],
         'embedding': embedding,
+        # Persisted provenance: a fallback score (score_ok False) or one from
+        # another chat model is re-scored on a later run (see run_once).
+        'score_ok': bool(score_ok),
+        'scored_with': chat_model,
         '_score_ok': score_ok,           # transient: dropped before the digest is written
         '_score_ms': round(score_ms, 1),
         '_enrich_ms': round((time.monotonic() - t0) * 1000.0, 1),
@@ -666,15 +706,26 @@ def _load_user_state():
         return {}
 
 
-def _load_embeddings_index():
-    """{article_id: vector} for the current digest, or {} if none yet."""
+def _load_embeddings_index(model=None):
+    """{article_id: vector} for the current digest, or {} if none yet.
+
+    With `model`, an index written by a different embedding model is ignored
+    (its vectors live in another space and may have another dimension), so
+    callers recompute instead of silently mixing spaces. An index without a
+    recorded model is treated as unknown and also ignored."""
     try:
         with open(users.path(EMBEDDINGS_FILE), 'r', encoding='utf-8') as fh:
             d = json.load(fh)
-        vecs = d.get('vectors') if isinstance(d, dict) else None
-        return vecs if isinstance(vecs, dict) else {}
     except Exception:
         return {}
+    if not isinstance(d, dict):
+        return {}
+    if model is not None and d.get('model') != model:
+        return {}
+    vecs = d.get('vectors')
+    if not isinstance(vecs, dict):
+        return {}
+    return {k: v for k, v in vecs.items() if isinstance(v, list) and v}
 
 
 def semantic_search(query, threshold=SEARCH_THRESHOLD, limit=80):
@@ -692,8 +743,10 @@ def semantic_search(query, threshold=SEARCH_THRESHOLD, limit=80):
     if not qn:
         return []
     results = []
-    for aid, vec in _load_embeddings_index().items():
-        n = _normalize(vec) if vec else None
+    for aid, vec in _load_embeddings_index(model).items():
+        if len(vec) != len(qn):
+            continue        # different vector space: never compare via a truncating zip
+        n = _normalize(vec)
         if not n:
             continue
         sim = sum(x * y for x, y in zip(qn, n))
@@ -710,13 +763,17 @@ def semantic_block(articles, topics, threshold, embed_model):
     topics = [t for t in (topics or []) if isinstance(t, str) and t.strip()]
     if not topics:
         return articles
-    topic_norms = [n for n in (_normalize(v) for v in _embed_many(topics, embed_model)) if n]
+    topic_norms = [n for n in (_normalize(v) for v in _embed_many(topics, embed_model) if v) if n]
     if not topic_norms:
+        # Embedding unavailable (e.g. Ollama down): keyword blocking already
+        # ran; skip the semantic layer for this run rather than failing it.
+        log('semantic topic blocking skipped: no topic embeddings available')
         return articles
     kept, dropped = [], 0
     for a in articles:
         n = _normalize(a['embedding']) if a.get('embedding') else None
-        if n is not None and max(sum(x * y for x, y in zip(n, tn)) for tn in topic_norms) > threshold:
+        sims = [sum(x * y for x, y in zip(n, tn)) for tn in topic_norms if len(tn) == len(n)] if n else []
+        if sims and max(sims) > threshold:
             dropped += 1
             continue
         kept.append(a)
@@ -1286,7 +1343,7 @@ def _user_digest_inputs(user):
             'read_ids': _load_read_ids(),
             'blocklist': [k.lower() for k in cfg['block_keywords']],
             'prev': [a for a in _load_prev_digest_articles() if isinstance(a, dict) and a.get('id')],
-            'emb_index': _load_embeddings_index(),
+            'emb_index': _load_embeddings_index(cfg['embed_model']),
         }
 
 
@@ -1309,6 +1366,8 @@ def build_user_digest(inp, fresh, pool_by_id, embed_model, embed_cache, multi):
         if a['id'] in mine_ids or a['id'] in read_ids or not (a['_feeds'] & inp['feed_urls']):
             continue
         scored = pool_by_id.get(a['id'])
+        if scored is not None and scored.get('url') != a['url']:
+            scored = None       # id collision: never serve another story's record
         if scored is None or _blocked_for(scored.get('title', ''), blocklist):
             continue
         art = dict(scored)
@@ -1324,7 +1383,8 @@ def build_user_digest(inp, fresh, pool_by_id, embed_model, embed_cache, multi):
         age = _age_hours(prev.get('published_at'))
         if age is not None and age >= hard_max:
             continue
-        art = dict(pool_by_id.get(aid) or prev)
+        pooled = pool_by_id.get(aid)
+        art = dict(pooled if pooled is not None and pooled.get('url') == prev.get('url') else prev)
         mine.append(art)
         mine_ids.add(aid)
         carried += 1
@@ -1367,7 +1427,8 @@ def build_user_digest(inp, fresh, pool_by_id, embed_model, embed_cache, multi):
     _atomic_write_json(users.path(EMBEDDINGS_FILE), {
         'generated_at': now, 'model': embed_model,
         'vectors': {i: v for i, v in emb_index.items() if i in kept_ids}})
-    corpus_archive.archive_articles(mine, emb_index, embed_model, cfg, log=log)
+    corpus_archive.archive_articles(mine, emb_index, embed_model, cfg, log=log,
+                                    owner=users.current().get('id'))
     return mine, len({a['cluster_id'] for a in mine})
 
 
@@ -1425,8 +1486,13 @@ def run_once():
         # reaches every user following any of them.
         by_url = {}
         for body, feed in bodies:
-            for art in parse_feed(body, feed.get('source', ''),
-                                  feed.get('category', 'tech'), cutoff):
+            try:
+                parsed = parse_feed(body, feed.get('source', ''), feed.get('category', 'tech'), cutoff)
+            except Exception as exc:
+                # One broken feed must not cost every user their digest.
+                log(f'feed {feed.get("url", "")[:120]} skipped: unparseable ({exc})')
+                continue
+            for art in parsed:
                 if art['url'] in by_url:
                     by_url[art['url']]['_feeds'].add(feed['url'])
                     continue
@@ -1458,16 +1524,38 @@ def run_once():
             for k, v in inp['emb_index'].items():
                 emb_index_prev.setdefault(k, v)
         fresh_ids = {a['id'] for a in fresh}
-        new_articles, reused = [], []
+        current_chat = cfg['ollama_model']
+
+        def needs_rescore(p):
+            # A fallback score (Ollama errored) or one made by a different chat
+            # model is retried within the normal budget instead of being kept
+            # forever. Records from before provenance was stored count as ok.
+            return p.get('score_ok') is False or bool(
+                p.get('scored_with') and p['scored_with'] != current_chat)
+
+        new_articles, reused, retry, have_prev = [], [], [], set()
         for a in fresh:
-            (reused if a['id'] in prev_by_id else new_articles).append(a)
-        to_score, deferred_count = select_new_for_scoring(new_articles, cfg['max_new_scored'])
+            # Reuse a pooled record only when it is the same URL — an id match
+            # alone must never hand one story's record to another link.
+            prev = prev_by_id.get(a['id'])
+            if prev is not None and prev.get('url') != a['url']:
+                prev = None
+            if prev is None:
+                new_articles.append(a)
+            elif needs_rescore(prev):
+                retry.append(a)
+                have_prev.add(a['id'])
+            else:
+                reused.append(a)
         carried_ids = {a['id'] for inp in inputs for a in inp['prev']
                        if a['id'] not in inp['read_ids']} - fresh_ids
+        retry += [dict(prev_by_id[i]) for i in sorted(carried_ids) if needs_rescore(prev_by_id[i])]
+        to_score, deferred_count = select_new_for_scoring(new_articles + retry, cfg['max_new_scored'])
+        scoring_ids = {a['id'] for a in to_score}
         log(f'parsed {len(fresh)} fresh articles: {len(new_articles)} new, '
-            f'{len(reused)} already scored; scoring {len(to_score)} '
+            f'{len(reused)} already scored, {len(retry)} to re-score; scoring {len(to_score)} '
             f'(budget {cfg["max_new_scored"]}, deferred {deferred_count})')
-        if not to_score and not carried_ids and not reused:
+        if not to_score and not carried_ids and not reused and not have_prev:
             return False
         new_count = len(new_articles)
 
@@ -1497,7 +1585,10 @@ def run_once():
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=cfg['score_concurrency']) as ex:
             scored = list(ex.map(_enrich, to_score))
-        keep_prev = [dict(prev_by_id[i]) for i in ({a['id'] for a in reused} | carried_ids)]
+        # Everything with a usable previous record that is not being (re)scored
+        # this run keeps that record and only needs its embedding.
+        keep_ids = ({a['id'] for a in reused} | carried_ids | have_prev) - scoring_ids
+        keep_prev = [dict(prev_by_id[i]) for i in keep_ids]
         if keep_prev:
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg['score_concurrency']) as ex:
                 scored.extend(ex.map(lambda a: _reembed(a, embed_model, emb_index_prev, embed_cache),

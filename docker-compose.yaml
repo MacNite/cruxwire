@@ -7,7 +7,9 @@ services:
     container_name: cruxwire
     restart: unless-stopped
     ports:
-      - "${PORT:-8090}:8090"
+      # Published on localhost only by default: put a TLS reverse proxy in
+      # front, or set BIND_ADDR=0.0.0.0 in .env to expose it on your LAN.
+      - "${BIND_ADDR:-127.0.0.1}:${PORT:-8090}:8090"
     environment:
       # Infrastructure wiring lives here in compose (not buried in .env).
       # Point this at your Ollama server. Which models to use is configured
@@ -30,9 +32,12 @@ services:
     volumes:
       - cruxwire-data:/data        # local named volume - no NAS share
     # The app itself is tiny (pure stdlib); the RAM budget belongs to Ollama.
-    # On a ~10 GB CPU-only host, qwen3.5:4b + nomic-embed-text fit with
-    # OLLAMA_MAX_PARALLEL=1. Uncomment to bound this container explicitly:
-    # mem_limit: 512m
+    # These bound the app container itself (override in .env if needed).
+    mem_limit: ${MEM_LIMIT:-512m}
+    pids_limit: ${PIDS_LIMIT:-256}
+    cpus: ${CPUS:-2}
+    security_opt:
+      - no-new-privileges:true
     env_file:
       - path: .env                  # optional: extra overrides
         required: false

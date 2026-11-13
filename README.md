@@ -119,7 +119,8 @@ Prefer building from source? Use `docker compose up -d --build` instead. Images 
 GitHub Container Registry for `linux/amd64` and `linux/arm64`: `:latest` tracks `main`, and version
 tags (`v1.2.3`) publish `:1.2.3`, `:1.2` and `:1`.
 
-Open `http://<host>:8090/`.
+Open `http://localhost:8090/`. Compose publishes the port on **localhost only** by default; set
+`BIND_ADDR=0.0.0.0` in `.env` to reach it from other machines (ideally behind a TLS reverse proxy).
 
 > ⚠️ **By default there is no login.** Keep this on a trusted private network and don't expose port
 > 8090 to the internet, or turn on [user accounts](#user-accounts) - see
@@ -277,6 +278,20 @@ Also worth knowing:
   accounts the trust model is "the network is trusted".
 - **Embedding in Home Assistant** - framing is allowed by default; set `FRAME_ANCESTORS` (e.g.
   `'self' https://ha.example.lan`) to restrict which sites may embed the app.
+- **Load limits.** Request bodies must arrive within `BODY_READ_DEADLINE_S` (30 s) and idle sockets
+  time out after `REQUEST_TIMEOUT_S` (30 s). At most `MAX_CONCURRENT_REQUESTS` (64) requests are
+  handled at once (503 beyond that), interactive model jobs (search, TL;DR) are capped at
+  `MAX_INTERACTIVE_MODEL_JOBS` (8) with per-user limits `SEARCH_PER_MINUTE` (30) and
+  `TLDR_PER_MINUTE` (10) (429), and at most `MAX_CONCURRENT_IMPORTS` (2) feed imports validate at
+  once. Configure matching limits on your reverse proxy.
+- **Container.** The image runs as the unprivileged user `cruxwire` (uid 10001). On start the
+  entrypoint hands an existing root-owned `/data` volume to that user once, then drops privileges.
+  Compose sets `mem_limit`, `pids_limit`, `cpus` and `no-new-privileges` (override `MEM_LIMIT`,
+  `PIDS_LIMIT`, `CPUS` in `.env`). If you mount a corpus directory for `BENCH_CORPUS_CAPTURE`, it
+  must be writable by uid 10001.
+- **Account storage fails closed.** If `users.json` is unreadable or invalid (or missing after
+  accounts were set up), the server refuses to start / answers 503 rather than reopening first-admin
+  setup. Restore it from `users.json.bak` (the previous good copy) or a backup.
 - **Runtime data is stored unencrypted** on the Docker volume (read history, Read Later, learned
   source preferences). Back up - and protect - the volume accordingly.
 
@@ -298,13 +313,14 @@ A few common knobs:
 | Var / setting | Default | Purpose |
 |-----|---------|---------|
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama base URL (chat + embeddings) |
-| Chat / Embedding model | `qwen3:8b` / `nomic-embed-text` | Ollama models |
+| Chat / Embedding model | `qwen3.5:4b` / `nomic-embed-text` | Ollama models |
 | Merge similarity (`SIM_THRESHOLD`) | `0.74` | Cosine threshold to collapse same-topic articles |
 | Lookback (`LOOKBACK_HOURS`) | `36` | How far back fresh items are first discovered |
 | Retention floor / ceiling (`RETAIN_FLOOR`/`RETAIN_CEILING`) | `25` / `60` | Keep at least / at most this many unread stories |
 | Schedule (`ACTIVE_START_HOUR`/`ACTIVE_END_HOUR`/`INTERVAL_HOURS`) | `6` / `22` / `2` | When runs fire |
-| `TZ` | `America/Los_Angeles` | Timezone the active-hours window is measured in (else UTC) |
+| `TZ` | `Europe/Berlin` (compose) | Timezone the active-hours window is measured in (else UTC) |
 | `PORT` | `8090` | Container HTTP port |
+| `BIND_ADDR` | `127.0.0.1` | Host address compose publishes the port on (`0.0.0.0` = all interfaces) |
 
 **→ [TUNING.md](TUNING.md) documents every knob**, what it does, how the knobs interact, and recipes
 ("it goes dry on weekends", "I'm seeing duplicate cards", "surface more of what I read", …). Full env
@@ -350,7 +366,7 @@ next run. The pipeline, feed validation, and UI all read from this one place.
 | `GET` | `/categories` | Configured categories (key / label / color / interest) |
 | `GET` | `/search?q=&threshold=` | Semantic search - ranked digest matches by embedding similarity |
 | `POST` | `/refresh` | Trigger a pipeline run now (202 started · 409 already running · 429 cooldown) |
-| `GET` | `/articles?offset=&limit=&category=` | Ranked, diversified page of unread stories (powers *Discover more*) |
+| `GET` | `/articles?limit=&category=&exclude=` | Ranked, diversified page of unread stories not in `exclude` (comma-separated ids already shown; powers *Discover more*). `offset=` paging is still accepted |
 | `GET` / `POST` | `/feedback` | List votes (`?full=1` for details) / vote `{id, vote: 1 \| -1 \| 0 \| null}` by server-known id |
 | `GET` | `/onboarding` | Wizard status, progress, feeds and a balanced candidate batch (`?n=&exclude=&force=1`) |
 | `POST` | `/onboarding/sources` | Validate (with sample headlines) and add a feed, or a Google News search `{query, lang, country}` |
@@ -416,6 +432,8 @@ python pipeline.py --benchmark 5
 | [onboarding.py](onboarding.py) | Wizard backend: feed inspection, candidate pool/rotation, seeds, completion |
 | [images.py](images.py) | Preview-image resolution, URL normalisation, Google News decoding, fallbacks |
 | [netsafe.py](netsafe.py) | SSRF-safe outbound HTTP used for every user/feed-supplied URL |
+| [article_ids.py](article_ids.py) | Collision-resistant article ids + one-time migration of legacy ids |
+| [docker-entrypoint.sh](docker-entrypoint.sh) | Fixes `/data` ownership once, then runs the app as uid 10001 |
 | [static/fallback/](static/fallback/) | Local topic illustrations (original artwork, MIT) |
 | [tests/](tests/) | Unit, API and image/HTML contract tests |
 | [digest.html](digest.html) | Single-file frontend: views, ranking display, affinity learning, layout |

@@ -921,7 +921,9 @@ const LEARNING_KEY      = 'digest_learning_v1';
 const HERO_THRESH       = 8.0;   // effectiveScore at/above this is "lead" material
 const LEAD_MAX          = 4;     // cap the lead tier so it stays editorial
 const MID_THRESH        = 5.5;   // (legacy; kept for any external reference)
-const HISTORY_DAYS      = 3; // keep today + 2 prior calendar days
+// Today + (N-1) prior calendar days; replaced by the server's
+// history_retention_days setting once /auth/me has loaded.
+let HISTORY_DAYS        = 3;
 
 const DEFAULT_VIEW_STATE = { currentView: 'digest', currentCat: 'all', digestCat: 'all', showScores: false };
 
@@ -947,7 +949,7 @@ function buildCats(list) {
   if (!Array.isArray(list) || !list.length) return;
   const next = { all: { label: 'All' } };
   for (const c of list) {
-    if (c && c.key) next[c.key] = { label: c.label || c.key, c: c.color || '#8a90a0' };
+    if (c && c.key) next[c.key] = { label: c.label || c.key, c: safeColor(c.color) };
   }
   CATS = next;
 }
@@ -1130,7 +1132,13 @@ function setSyncStatus(state, message) {
   el.style.display = state === 'idle' ? 'none' : 'inline-flex';
 }
 
+// Bumped on every local mutation (every saveSharedState call). A PUT response
+// is only allowed to replace local later/history when nothing changed while
+// it was in flight; otherwise the newer local state wins and is sent next.
+let stateGen = 0;
+
 async function saveSharedState({ remote = true } = {}) {
+  stateGen += 1;
   sharedState.updatedAt = new Date().toISOString();
   saveLocalState(sharedState);
 
@@ -1151,10 +1159,20 @@ async function saveSharedState({ remote = true } = {}) {
   // dismiss animations on every save.
   const sentLaterCount = sharedState.later.length;
   const sentHistoryCount = sharedState.history.length;
+  const sentGen = stateGen;
 
   try {
     const remoteState = await saveRemoteState(sharedState);
-    if (remoteState) applySharedState(remoteState);
+    if (remoteState && stateGen === sentGen) {
+      applySharedState(remoteState);
+    } else if (remoteState) {
+      // Local changes landed while this PUT was in flight (e.g. a second
+      // "Read later"): applying the echo of the older snapshot would drop
+      // them. Merge only the append-only readIds and let the queued save
+      // send the newer local state.
+      for (const id of remoteState.readIds) sharedState.readIds.add(id);
+      queuedRemoteSave = true;
+    }
     saveLocalState(sharedState);
     syncFailureCount = 0;
     setSyncStatus('idle');
@@ -1162,9 +1180,9 @@ async function saveSharedState({ remote = true } = {}) {
     // readIds no longer shrink to the digest, and rerendering on a readIds
     // change would restructure the page mid-triage (the dismissed card would
     // be rebuilt and a new lead promoted under you).
-    const pruned =
+    const pruned = stateGen === sentGen && (
       sharedState.later.length < sentLaterCount ||
-      sharedState.history.length < sentHistoryCount;
+      sharedState.history.length < sentHistoryCount);
     if (pruned) rerenderActiveView();
   } catch (err) {
     syncFailureCount += 1;
@@ -1309,8 +1327,8 @@ function thumb(a) {
   // error too) → tinted label block underneath. Never a broken-image icon.
   const fb = fallbackFor(a);
   const src = a.image || fb;
-  const im = `<img src="${escapeAttr(src)}" alt="" loading="lazy" referrerpolicy="no-referrer"`
-    + `${a.image ? '' : ' class="is-fallback"'} data-fallback="${escapeAttr(fb)}" onerror="imgFallback(this)">`;
+  const im = `<img src="${attrUrl(src)}" alt="" loading="lazy" referrerpolicy="no-referrer"`
+    + `${a.image ? '' : ' class="is-fallback"'} data-fallback="${attrUrl(fb)}" onerror="imgFallback(this)">`;
   // Count badge when this card rolls up duplicates — clearly visible on the image.
   const others = (a._clusterOthers || []).length;
   const badge = others > 0 ? `<span class="thumb-badge">＋${others}</span>` : '';
@@ -1321,7 +1339,7 @@ function thumb(a) {
 // thumbnail badge and the expander, not a separate pill here.
 function kicker(a) {
   const cat = catMeta(a.category);
-  return `<span class="kicker" style="color:${cat.c}"><span class="cdot" style="background:${cat.c}"></span>${cat.label || a.category}</span>`;
+  return `<span class="kicker" style="color:${cat.c}"><span class="cdot" style="background:${cat.c}"></span>${escapeHtml(cat.label || a.category)}</span>`;
 }
 
 function articleDate(article) {
@@ -1518,8 +1536,8 @@ function clusterDisclosure(a) {
   const ci = clusterInfo(a);
   if (!ci) return '';
   const items = ci.others.map(o => `<li>
-        <span class="cluster-src">${o.source}</span>
-        <a href="${o.url}" onclick="openClusterMember('${a.id}','${o.id}','${o.url}'); return false;">${o.title} <span class="cluster-ext">↗</span></a>
+        <span class="cluster-src">${escapeHtml(o.source)}</span>
+        <a href="${attrUrl(o.url)}" onclick="openClusterMember(${jsArg(a.id)},${jsArg(o.id)},${jsArg(o.url)}); return false;">${escapeHtml(o.title)} <span class="cluster-ext">↗</span></a>
       </li>`).join('');
   const n = ci.others.length;
   return `<details class="cluster-more" onclick="event.stopPropagation();">
@@ -1541,7 +1559,9 @@ window.openClusterMember = function(repId, memberId, url) {
     // Engagement credits the source actually clicked, not the representative.
     recordInteraction(member.source, 'open');
   }
-  window.open(url, '_blank');
+  // Only real web links: a javascript:/data: URL opened here would run with
+  // this page's origin (window.open gives the new tab our origin).
+  if (safeUrl(url) !== '#') window.open(safeUrl(url), '_blank', 'noopener');
   // Opening any coverage marks the whole story read and removes the card.
   dismiss(repId, true);
   updateBadges();
@@ -1582,7 +1602,9 @@ function openArticle(id, url) {
     saveSharedState().catch(() => {});
   }
 
-  window.open(url, '_blank');
+  // Only real web links: a javascript:/data: URL opened here would run with
+  // this page's origin (window.open gives the new tab our origin).
+  if (safeUrl(url) !== '#') window.open(safeUrl(url), '_blank', 'noopener');
   // Pass internal=true so dismiss doesn't double-count this as a dismiss —
   // an open is positive signal, dismiss is the cleanup that follows.
   dismiss(id, true);
@@ -1674,7 +1696,7 @@ function buildCatNav() {
       const c = CATS[key];
       const n = counts[key] || 0;
       const badge = n > 0 ? `<span class="badge">${n}</span>` : '';
-      return `<button class="cattab${key === currentCat ? ' active' : ''}" data-cat="${key}" onclick="setCategory('${key}')">${c.c ? `<span class="cat-dot" style="background:${c.c}"></span>` : ''}${c.label}${badge}</button>`;
+      return `<button class="cattab${key === currentCat ? ' active' : ''}" data-cat="${escapeHtml(key)}" onclick="setCategory(${jsArg(key)})">${c.c ? `<span class="cat-dot" style="background:${c.c}"></span>` : ''}${escapeHtml(c.label)}${badge}</button>`;
     }).join('');
   } else if (currentView === 'later') {
     bar.style.display = 'flex';
@@ -1688,7 +1710,7 @@ function buildCatNav() {
       const c = CATS[key];
       const n = counts[key] || 0;
       const badge = n > 0 ? `<span class="badge">${n}</span>` : '';
-      return `<button class="cattab${key === currentCat ? ' active' : ''}" data-cat="${key}" onclick="setCategory('${key}')">${c.c ? `<span class="cat-dot" style="background:${c.c}"></span>` : ''}${c.label}${badge}</button>`;
+      return `<button class="cattab${key === currentCat ? ' active' : ''}" data-cat="${escapeHtml(key)}" onclick="setCategory(${jsArg(key)})">${c.c ? `<span class="cat-dot" style="background:${c.c}"></span>` : ''}${escapeHtml(c.label)}${badge}</button>`;
     }).join('');
   } else if (currentView === 'history') {
     bar.style.display = 'flex';
@@ -1702,7 +1724,7 @@ function buildCatNav() {
       const c = CATS[key];
       const n = counts[key] || 0;
       const badge = n > 0 ? `<span class="badge">${n}</span>` : '';
-      return `<button class="cattab${key === currentCat ? ' active' : ''}" data-cat="${key}" onclick="setCategory('${key}')">${c.c ? `<span class="cat-dot" style="background:${c.c}"></span>` : ''}${c.label}${badge}</button>`;
+      return `<button class="cattab${key === currentCat ? ' active' : ''}" data-cat="${escapeHtml(key)}" onclick="setCategory(${jsArg(key)})">${c.c ? `<span class="cat-dot" style="background:${c.c}"></span>` : ''}${escapeHtml(c.label)}${badge}</button>`;
     }).join('');
   } else {
     // Settings (and any future non-list views) — no category filter applies.
@@ -1944,32 +1966,32 @@ function srcLine(a) {
 function cardActions(a) {
   return `<div class="card-actions">
       ${voteButtons(a)}
-      <button class="act later" onclick="saveForLater('${a.id}')">Read later</button>
-      <button class="act done" onclick="dismiss('${a.id}')" title="Hide (not a dislike)">Done</button>
+      <button class="act later" onclick="saveForLater(${jsArg(a.id)})">Read later</button>
+      <button class="act done" onclick="dismiss(${jsArg(a.id)})" title="Hide (not a dislike)">Done</button>
     </div>`;
 }
 const openLink = (a, inner) =>
-  `<a href="${a.url}" onclick="openArticle('${a.id}','${a.url}'); return false;">${inner}</a>`;
+  `<a href="${attrUrl(a.url)}" onclick="openArticle(${jsArg(a.id)},${jsArg(a.url)}); return false;">${inner}</a>`;
 
 function renderHero(lead, side) {
   const el = document.getElementById('section-hero');
   if (!lead) { el.innerHTML = '<p class="empty">No stories for this filter.</p>'; return; }
   const leadHTML = `
-    <article class="article-wrap lead${voteClass(lead)}" id="wrap-${lead.id}" style="max-height:9999px;">
+    <article class="article-wrap lead${voteClass(lead)}" id="wrap-${escapeHtml(lead.id)}" style="max-height:9999px;">
       ${thumbBlock(lead)}
       ${kicker(lead)}
-      <h2 class="lead-title" title="${escapeAttr(lead.title)}">${openLink(lead, lead.title)}</h2>
-      ${lead.summary ? `<p class="lead-summary">${lead.summary}</p>` : ''}
+      <h2 class="lead-title" title="${escapeAttr(lead.title)}">${openLink(lead, escapeHtml(lead.title))}</h2>
+      ${lead.summary ? `<p class="lead-summary">${escapeHtml(lead.summary)}</p>` : ''}
       ${whyLine(lead)}
       ${clusterDisclosure(lead)}
       <div class="lead-foot">${srcLine(lead)} ${cardActions(lead)}</div>
     </article>`;
   const sideHTML = side.map(a => `
-    <article class="article-wrap mini${voteClass(a)}" id="wrap-${a.id}" style="max-height:9999px;">
+    <article class="article-wrap mini${voteClass(a)}" id="wrap-${escapeHtml(a.id)}" style="max-height:9999px;">
       ${thumbBlock(a)}
       <div>
         ${kicker(a)}
-        <h3 class="mini-title" title="${escapeAttr(a.title)}">${openLink(a, a.title)}</h3>
+        <h3 class="mini-title" title="${escapeAttr(a.title)}">${openLink(a, escapeHtml(a.title))}</h3>
         ${clusterDisclosure(a)}
         <div class="mini-foot">${srcLine(a)} ${cardActions(a)}</div>
       </div>
@@ -1979,11 +2001,11 @@ function renderHero(lead, side) {
 
 function gridCardHTML(a) {
   return `
-    <article class="article-wrap card${voteClass(a)}" id="wrap-${a.id}" style="max-height:9999px;">
+    <article class="article-wrap card${voteClass(a)}" id="wrap-${escapeHtml(a.id)}" style="max-height:9999px;">
       ${thumbBlock(a)}
       ${kicker(a)}
-      <h3 class="card-title" title="${escapeAttr(a.title)}">${openLink(a, a.title)}</h3>
-      ${a.summary ? `<p class="card-summary">${a.summary}</p>` : ''}
+      <h3 class="card-title" title="${escapeAttr(a.title)}">${openLink(a, escapeHtml(a.title))}</h3>
+      ${a.summary ? `<p class="card-summary">${escapeHtml(a.summary)}</p>` : ''}
       ${whyLine(a)}
       ${clusterDisclosure(a)}
       <div class="card-foot">${srcLine(a)} ${cardActions(a)}</div>
@@ -1999,13 +2021,13 @@ function renderGrid(cards) {
 // A search hit that's already in Read Later. Highlighted, opens in a new tab
 // (a search must never silently un-save it, so no openLaterArticle here).
 function savedCardHTML(a) {
-  const link = `href="${a.url}" target="_blank" rel="noopener"`;
+  const link = `href="${attrUrl(a.url)}" target="_blank" rel="noopener"`;
   return `
-    <article class="article-wrap card saved-hit" id="saved-hit-${a.id}" style="max-height:9999px;">
+    <article class="article-wrap card saved-hit" id="saved-hit-${escapeHtml(a.id)}" style="max-height:9999px;">
       <a ${link}>${thumb(a)}</a>
       <span class="saved-tag">★ Saved</span>
-      <h3 class="card-title" title="${escapeAttr(a.title)}"><a ${link}>${a.title}</a></h3>
-      ${a.bottomLine ? `<p class="card-summary">${escapeAttr(a.bottomLine)}</p>` : ''}
+      <h3 class="card-title" title="${escapeAttr(a.title)}"><a ${link}>${escapeHtml(a.title)}</a></h3>
+      ${a.bottomLine ? `<p class="card-summary">${escapeHtml(a.bottomLine)}</p>` : ''}
       <div class="card-foot">${srcLine(a)}</div>
     </article>`;
 }
@@ -2022,14 +2044,14 @@ function renderRail(articles, hidden = 0) {
   el.innerHTML = Object.entries(groups).map(([day, arts]) => `
     <div class="rail-day">${day}</div>
     ${arts.map(a => `
-      <article class="article-wrap rail-item" id="wrap-${a.id}" style="max-height:9999px;">
-        <a class="rail-title" href="${a.url}" onclick="openArticle('${a.id}','${a.url}'); return false;">${a.title}</a>
-        <div class="rail-meta"><span class="cdot" style="background:${catMeta(a.category).c}"></span><span>${a.source}</span></div>
+      <article class="article-wrap rail-item" id="wrap-${escapeHtml(a.id)}" style="max-height:9999px;">
+        <a class="rail-title" href="${attrUrl(a.url)}" onclick="openArticle(${jsArg(a.id)},${jsArg(a.url)}); return false;">${escapeHtml(a.title)}</a>
+        <div class="rail-meta"><span class="cdot" style="background:${catMeta(a.category).c}"></span><span>${escapeHtml(a.source)}</span></div>
         ${clusterDisclosure(a)}
         <div class="rail-actions">
           ${voteButtons(a)}
-          <button class="act later" onclick="saveForLater('${a.id}')">Later</button>
-          <button class="act done" onclick="dismiss('${a.id}')">Done</button>
+          <button class="act later" onclick="saveForLater(${jsArg(a.id)})">Later</button>
+          <button class="act done" onclick="dismiss(${jsArg(a.id)})">Done</button>
         </div>
       </article>`).join('')}
   `).join('') + moreCtl;
@@ -2136,22 +2158,22 @@ window.retryTldr = function(id) {
 
 function tldrToggleBtn(a) {
   const busy = a.tldrState === 'pending' && !(a.tldr && a.tldr.length);
-  return `<button class="list-btn tldr-toggle" onclick="toggleTldr('${a.id}')">${
+  return `<button class="list-btn tldr-toggle" onclick="toggleTldr(${jsArg(a.id)})">${
     tldrOpen.has(a.id) ? '▾' : '▸'} ${busy ? 'Summarizing…' : 'TL;DR'}</button>`;
 }
 
 function tldrPanel(a) {
   if (!tldrOpen.has(a.id)) return '';
   const regen = (title) =>
-    `<button class="tldr-regen-icon" onclick="retryTldr('${a.id}')" title="${title}" aria-label="${title}">↻</button>`;
+    `<button class="tldr-regen-icon" onclick="retryTldr(${jsArg(a.id)})" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">↻</button>`;
   let inner;
   if (a.tldr && a.tldr.length) {
     const readMeta = a.readMinutes
-      ? `<p class="tldr-read">≈ ${a.readMinutes} min read</p>` : '';
+      ? `<p class="tldr-read">≈ ${escapeHtml(a.readMinutes)} min read</p>` : '';
     inner = regen('Regenerate')
       + readMeta
-      + `<ul class="tldr-list">${a.tldr.map(b => `<li>${escapeAttr(b)}</li>`).join('')}</ul>`
-      + (a.bottomLine ? `<p class="tldr-bottom"><span>Bottom line:</span> ${escapeAttr(a.bottomLine)}</p>` : '');
+      + `<ul class="tldr-list">${a.tldr.map(b => `<li>${escapeHtml(b)}</li>`).join('')}</ul>`
+      + (a.bottomLine ? `<p class="tldr-bottom"><span>Bottom line:</span> ${escapeHtml(a.bottomLine)}</p>` : '');
   } else if (a.tldrState === 'pending') {
     inner = '<p class="tldr-status">Summarizing…</p>';
   } else {
@@ -2180,18 +2202,18 @@ function renderLater() {
       <button class="list-clear" onclick="clearLater()">Clear all</button>
     </div>
     ${sorted.length === 0 ? '<p class="empty">Nothing in this category.</p>' : sorted.map(a => `
-      <div class="list-row" id="later-row-${a.id}">
+      <div class="list-row" id="later-row-${escapeHtml(a.id)}">
         <div class="list-main">
-          <div class="list-source">${a.source}</div>
-          <div class="list-title"><a href="${a.url}" target="_blank" rel="noopener" onclick="openLaterArticle('${a.id}')">${a.title}</a></div>
-          <div class="list-url">${a.url}</div>
+          <div class="list-source">${escapeHtml(a.source)}</div>
+          <div class="list-title"><a href="${attrUrl(a.url)}" target="_blank" rel="noopener" onclick="openLaterArticle(${jsArg(a.id)})">${escapeHtml(a.title)}</a></div>
+          <div class="list-url">${escapeHtml(a.url)}</div>
           <div class="list-time">Saved ${formatDateTime(a.savedAt)}</div>
           ${tldrPanel(a)}
         </div>
         <div class="list-actions">
           ${tldrToggleBtn(a)}
-          <button class="list-btn" data-title="${a.title.replace(/"/g,'&quot;')}" data-url="${a.url}" onclick="copyArticle(this.dataset.title,this.dataset.url,this)">Copy</button>
-          <button class="list-btn remove" onclick="removeFromLater('${a.id}')">Remove</button>
+          <button class="list-btn" data-title="${escapeHtml(a.title)}" data-url="${escapeHtml(a.url)}" onclick="copyArticle(this.dataset.title,this.dataset.url,this)">Copy</button>
+          <button class="list-btn remove" onclick="removeFromLater(${jsArg(a.id)})">Remove</button>
         </div>
       </div>
     `).join('')}
@@ -2232,13 +2254,13 @@ function renderHistory() {
     ${sorted.length === 0 ? '<p class="empty">Nothing in this category.</p>' : sorted.map(a => `
       <div class="list-row">
         <div class="list-main">
-          <div class="list-source">${a.source || ''}</div>
-          <div class="list-title"><a href="${a.url}" target="_blank" rel="noopener">${a.title}</a></div>
-          <div class="list-url">${a.url}</div>
+          <div class="list-source">${escapeHtml(a.source || '')}</div>
+          <div class="list-title"><a href="${attrUrl(a.url)}" target="_blank" rel="noopener">${escapeHtml(a.title)}</a></div>
+          <div class="list-url">${escapeHtml(a.url)}</div>
           <div class="list-time">Viewed at ${formatTime(a.viewedAt)}</div>
         </div>
         <div class="list-actions">
-          <button class="list-btn" data-title="${a.title.replace(/"/g,'&quot;')}" data-url="${a.url}" onclick="copyArticle(this.dataset.title,this.dataset.url,this)">Copy</button>
+          <button class="list-btn" data-title="${escapeHtml(a.title)}" data-url="${escapeHtml(a.url)}" onclick="copyArticle(this.dataset.title,this.dataset.url,this)">Copy</button>
         </div>
       </div>
     `).join('')}
@@ -2536,7 +2558,7 @@ function renderFeedsTable() {
   const th = (col, label, numeric = false) => {
     const active = feedsTableSort.col === col;
     const arrow  = active ? (feedsTableSort.dir === 'desc' ? '▼' : '▲') : '';
-    return `<th class="sortable${active ? ' active' : ''}${numeric ? ' num' : ''}" onclick="sortFeedsTable('${col}')">${label}<span class="sort-arrow">${arrow}</span></th>`;
+    return `<th class="sortable${active ? ' active' : ''}${numeric ? ' num' : ''}" onclick="sortFeedsTable(${jsArg(col)})">${label}<span class="sort-arrow">${arrow}</span></th>`;
   };
 
   wrap.innerHTML = `
@@ -2566,7 +2588,7 @@ function renderFeedsTable() {
             <tr${r.isConfigured ? '' : ' class="ghost-row"'}>
               <td>
                 ${r.site
-                  ? `<a class="feed-cell-name feed-site-link" href="${escapeAttr(r.site)}" target="_blank" rel="noopener" title="Visit ${escapeAttr(r.site)}">${escapeAttr(r.source)}<span class="ext">↗</span></a>`
+                  ? `<a class="feed-cell-name feed-site-link" href="${attrUrl(r.site)}" target="_blank" rel="noopener" title="Visit ${escapeAttr(r.site)}">${escapeAttr(r.source)}<span class="ext">↗</span></a>`
                   : `<div class="feed-cell-name">${escapeAttr(r.source)}</div>`}
                 ${r.url ? `<div class="feed-cell-url" title="${escapeAttr(r.url)}">${escapeAttr(r.url)}</div>` : ''}
               </td>
@@ -2818,7 +2840,7 @@ function renderSettings() {
   el.innerHTML = `
     <nav class="subtabs" aria-label="Settings sections">
       ${visibleSettingsTabs().map(t =>
-        `<button class="subtab${t.id === settingsTab ? ' active' : ''}" onclick="switchSettingsTab('${t.id}')">${t.label}</button>`
+        `<button class="subtab${t.id === settingsTab ? ' active' : ''}" onclick="switchSettingsTab(${jsArg(t.id)})">${t.label}</button>`
       ).join('')}
     </nav>
     <div id="settings-pane"></div>
@@ -2894,7 +2916,7 @@ window.toggleShowScores = function(on) {
 function renderFeedsPane(pane) {
   const catOptions = Object.keys(CATS)
     .filter(k => k !== 'all')
-    .map(k => `<option value="${k}"${feedFormCategory === k ? ' selected' : ''}>${CATS[k].label}</option>`)
+    .map(k => `<option value="${escapeHtml(k)}"${feedFormCategory === k ? ' selected' : ''}>${escapeHtml(CATS[k].label)}</option>`)
     .join('');
   pane.innerHTML = `
     <div class="settings-section">
@@ -3006,7 +3028,7 @@ function openImportWizard(feeds) {
 function opmlCatSelect(i) {
   const folder = opmlFolders[i], cur = opmlMap[folder];
   const opts = Object.keys(CATS).filter(k => k !== 'all')
-    .map(k => `<option value="${k}"${cur === k ? ' selected' : ''}>${escapeAttr(CATS[k].label)}</option>`).join('');
+    .map(k => `<option value="${escapeHtml(k)}"${cur === k ? ' selected' : ''}>${escapeHtml(CATS[k].label)}</option>`).join('');
   const createLabel = folder || 'Imported';
   return `<select class="cfg-select" onchange="setOpmlMap(${i}, this.value)">
       ${opts}
@@ -3218,6 +3240,7 @@ async function fetchSettings() {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
   appSettings = data.settings;
+  if (appSettings && Number.isInteger(appSettings.history_retention_days)) HISTORY_DAYS = appSettings.history_retention_days;
   appSettingsSchema = data.schema;
   deployInfo = data.deploy;
   return data;
@@ -3235,6 +3258,7 @@ async function saveSettings(patch) {
   }
   const data = await res.json();
   appSettings = data.settings;
+  if (appSettings && Number.isInteger(appSettings.history_retention_days)) HISTORY_DAYS = appSettings.history_retention_days;
   appSettingsSchema = data.schema;
   deployInfo = data.deploy;
   return data;
@@ -3269,7 +3293,7 @@ function renderNumericGroup(group, title) {
       ${entries.map(([key, spec]) => numberField(key, spec, appSettings[key])).join('')}
     </div>
     <div class="cfg-actions">
-      <button class="feed-btn primary" onclick="saveConfigGroup('${group}')">Save</button>
+      <button class="feed-btn primary" onclick="saveConfigGroup(${jsArg(group)})">Save</button>
       <span class="cfg-status" id="cfg-status-${group}"></span>
     </div>
   </div>`;
@@ -3309,7 +3333,7 @@ function blockChips(key, terms) {
     return `<span class="cfg-empty">${msg}</span>`;
   }
   return terms.map((t, i) =>
-    `<span class="kw-chip">${escapeAttr(t)}<button class="kw-chip-x" title="Remove" onclick="removeListItemAt('${key}',${i})">×</button></span>`
+    `<span class="kw-chip">${escapeAttr(t)}<button class="kw-chip-x" title="Remove" onclick="removeListItemAt(${jsArg(key)},${i})">×</button></span>`
   ).join('');
 }
 
@@ -3324,8 +3348,8 @@ function chipSection(key, scope, placeholder) {
       <div class="feed-form-row">
         <input class="feed-input" id="add-${scope}-input" type="text"
                placeholder="${placeholder}"
-               onkeydown="if(event.key==='Enter'){event.preventDefault();addListItem('${key}','${scope}');}">
-        <button class="feed-btn primary" onclick="addListItem('${key}','${scope}')">Add</button>
+               onkeydown="if(event.key==='Enter'){event.preventDefault();addListItem(${jsArg(key)},${jsArg(scope)});}">
+        <button class="feed-btn primary" onclick="addListItem(${jsArg(key)},${jsArg(scope)})">Add</button>
       </div>
       <div class="cfg-status" id="cfg-status-${scope}"></div>
     </div>
@@ -3427,6 +3451,25 @@ function escapeHtml(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
+// A value as a JavaScript string literal inside an inline handler attribute
+// (onclick="fn(${jsArg(x)})"): JSON-encode for the JS context, then
+// HTML-escape for the attribute context. Never splice data into '...'.
+function jsArg(v) {
+  return escapeHtml(JSON.stringify(v == null ? '' : String(v)));
+}
+// Only http(s) (or same-origin absolute paths) may become a link/image URL;
+// anything else (javascript:, data:, ...) collapses to '#'.
+function safeUrl(u) {
+  const s = String(u ?? '').trim();
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.startsWith('/') && !s.startsWith('//')) return s;
+  return '#';
+}
+function attrUrl(u) { return escapeHtml(safeUrl(u)); }
+// Category colours end up in style="" attributes: hex only.
+function safeColor(c) {
+  return /^#[0-9a-f]{3,8}$/i.test(String(c || '')) ? c : '#8a90a0';
+}
 
 /* ── Images: photo → local topic illustration, never a broken icon ── */
 const CAT_TOPIC = { ai: 'technology', tech: 'technology', devtools: 'technology', productivity: 'technology',
@@ -3484,8 +3527,8 @@ function voteClass(a) { return votes[a.id] === -1 ? ' disliked' : ''; }
 function voteButtons(a) {
   const v = votes[a.id] || 0;
   return `<span class="vote-group">`
-    + `<button class="vote-btn like" data-vote-id="${a.id}" data-v="1" aria-label="Like" title="Like — more like this" aria-pressed="${v === 1}" onclick="vote('${a.id}', 1)">▲</button>`
-    + `<button class="vote-btn dislike" data-vote-id="${a.id}" data-v="-1" aria-label="Dislike" title="Dislike — less like this" aria-pressed="${v === -1}" onclick="vote('${a.id}', -1)">▼</button>`
+    + `<button class="vote-btn like" data-vote-id="${escapeHtml(a.id)}" data-v="1" aria-label="Like" title="Like — more like this" aria-pressed="${v === 1}" onclick="vote(${jsArg(a.id)}, 1)">▲</button>`
+    + `<button class="vote-btn dislike" data-vote-id="${escapeHtml(a.id)}" data-v="-1" aria-label="Dislike" title="Dislike — less like this" aria-pressed="${v === -1}" onclick="vote(${jsArg(a.id)}, -1)">▼</button>`
     + `</span>`;
 }
 
@@ -3496,7 +3539,7 @@ function whyLine(a) {
 
 function updateVoteUI(id) {
   const v = votes[id] || 0;
-  document.querySelectorAll(`[data-vote-id="${id}"]`).forEach(b => {
+  document.querySelectorAll(`[data-vote-id="${CSS.escape(String(id))}"]`).forEach(b => {
     b.setAttribute('aria-pressed', String(Number(b.dataset.v) === v));
   });
   const wrap = document.getElementById('wrap-' + id);
@@ -3595,7 +3638,7 @@ const cfeed = { ids: [], next: 0, loading: false, cat: null, gen: undefined, don
 function compactCardHTML(a) {
   const others = (a._clusterOthers || []).length;
   return `
-    <article class="article-wrap ccard${voteClass(a)}" id="wrap-${a.id}">
+    <article class="article-wrap ccard${voteClass(a)}" id="wrap-${escapeHtml(a.id)}">
       ${thumbBlock(a)}
       <div class="ccard-body">
         ${kicker(a)}
@@ -3607,9 +3650,9 @@ function compactCardHTML(a) {
       </div>
       <div class="ccard-actions">
         ${voteButtons(a)}
-        <button class="act later" onclick="saveForLater('${a.id}')" aria-label="Save for later">Save</button>
-        <button class="act done" onclick="dismiss('${a.id}')" aria-label="Hide (not a dislike)">Hide</button>
-        <a class="act open" href="${escapeAttr(a.url)}" target="_blank" rel="noopener" onclick="openArticle('${a.id}','${escapeAttr(a.url)}'); return false;" aria-label="Open original article">Open ↗</a>
+        <button class="act later" onclick="saveForLater(${jsArg(a.id)})" aria-label="Save for later">Save</button>
+        <button class="act done" onclick="dismiss(${jsArg(a.id)})" aria-label="Hide (not a dislike)">Hide</button>
+        <a class="act open" href="${attrUrl(a.url)}" target="_blank" rel="noopener" onclick="openArticle(${jsArg(a.id)},${jsArg(a.url)}); return false;" aria-label="Open original article">Open ↗</a>
       </div>
     </article>`;
 }
@@ -3646,7 +3689,11 @@ async function loadCompactPage() {
   const PAGE = 15;
   try {
     if (cfeed.local) throw new Error('local');
-    const q = `/articles?offset=${cfeed.next}&limit=${PAGE}&category=${encodeURIComponent(currentCat)}`;
+    // Page by "what this list already shows", not by a numeric offset: the
+    // server's unread set shrinks as stories are read, so an offset would
+    // skip unseen ones.
+    const q = `/articles?limit=${PAGE}&category=${encodeURIComponent(currentCat)}`
+      + `&exclude=${encodeURIComponent(cfeed.ids.join(','))}`;
     const r = await fetch(q, { cache: 'no-store' });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
@@ -3782,7 +3829,7 @@ function obSourcesHTML() {
     .map(k => `<option value="${escapeAttr(k)}">${escapeHtml(CATS[k].label)}</option>`).join('');
   const feedRows = feeds.length ? feeds.map(f => `
       <li><span style="min-width:0;"><b>${escapeHtml(f.source)}</b><span class="u">${escapeHtml(f.url)}</span></span>
-        <button class="ob-chip" onclick="obRemoveFeed('${escapeAttr(encodeURIComponent(f.url))}')" aria-label="Remove ${escapeAttr(f.source)}">Remove</button></li>`).join('')
+        <button class="ob-chip" onclick="obRemoveFeed(${jsArg(encodeURIComponent(f.url))})" aria-label="Remove ${escapeAttr(f.source)}">Remove</button></li>`).join('')
     : '<li><span class="u" style="white-space:normal;">No sources yet — add one below or start from an example.</span></li>';
   return `
     <h2>Choose your sources</h2>
@@ -3959,7 +4006,7 @@ function obCardHTML(c) {
         <div class="ob-card-meta"><b>${escapeHtml(c.publisher || c.source)}</b>${obFmtDate(c.published_at) ? `<span>· ${obFmtDate(c.published_at)}</span>` : ''}<span>· ${escapeHtml(topic)}</span></div>
         <h3 class="ob-card-title">${escapeHtml(c.title)}</h3>
         ${c.description ? `<p class="ob-card-desc">${escapeHtml(c.description)}</p>` : ''}
-        <a class="ob-card-link" href="${escapeAttr(c.url)}" target="_blank" rel="noopener noreferrer">Read the article ↗</a>
+        <a class="ob-card-link" href="${attrUrl(c.url)}" target="_blank" rel="noopener noreferrer">Read the article ↗</a>
       </div>
       <div class="ob-actions">
         <button class="ob-btn dislike" onclick="obAct('dislike')" aria-label="Dislike" ${obState.busy ? 'disabled' : ''}>▼ Dislike</button>
@@ -4110,9 +4157,9 @@ function votesListHTML(items, onchange) {
   return `<ul class="ob-review" style="padding:0;">${items.map(it => `
     <li><span class="t" title="${escapeAttr(it.title)}">${it.vote === 1 ? '▲' : '▼'} ${escapeHtml(it.title)}</span>
       <span class="v">${escapeHtml(it.source || '')}</span>
-      <button class="vote-btn like" aria-label="Like" aria-pressed="${it.vote === 1}" onclick="${onchange}('${escapeAttr(it.id)}', 1)">▲</button>
-      <button class="vote-btn dislike" aria-label="Dislike" aria-pressed="${it.vote === -1}" onclick="${onchange}('${escapeAttr(it.id)}', -1)">▼</button>
-      <button class="vote-btn" aria-label="Remove vote" title="Remove vote" onclick="${onchange}('${escapeAttr(it.id)}', 0)">✕</button></li>`).join('')}</ul>`;
+      <button class="vote-btn like" aria-label="Like" aria-pressed="${it.vote === 1}" onclick="${onchange}(${jsArg(it.id)}, 1)">▲</button>
+      <button class="vote-btn dislike" aria-label="Dislike" aria-pressed="${it.vote === -1}" onclick="${onchange}(${jsArg(it.id)}, -1)">▼</button>
+      <button class="vote-btn" aria-label="Remove vote" title="Remove vote" onclick="${onchange}(${jsArg(it.id)}, 0)">✕</button></li>`).join('')}</ul>`;
 }
 
 function obReviewHTML() {
@@ -4404,28 +4451,60 @@ let ME = { mode: 'none', user: null };
 const multiUser = () => ME.mode && ME.mode !== 'none';
 const isAdmin = () => !multiUser() || !!(ME.user && ME.user.role === 'admin');
 
+// Every same-origin API call carries the account this page was loaded for.
+// The server answers 409 {accountChanged} when the session cookie now belongs
+// to someone else (another tab signed in as a different user), so this tab
+// can never read or write the other account with its stale in-memory state.
 // Any API call that comes back 401 means the session ended: go sign in.
 const _rawFetch = window.fetch.bind(window);
+let ACCOUNT_ID = null;
+let accountSwitchHandled = false;
+function onAccountChanged() {
+  if (accountSwitchHandled) return;
+  accountSwitchHandled = true;
+  // Drop everything held for the previous account before reloading.
+  allArticles = [];
+  sharedState = normalizeState({});
+  location.reload();
+}
 window.fetch = async function(input, init) {
-  const res = await _rawFetch(input, init);
   const url = typeof input === 'string' ? input : (input && input.url) || '';
+  const sameOrigin = !/^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith(location.origin + '/');
+  if (ACCOUNT_ID && sameOrigin) {
+    const headers = new Headers((init && init.headers) || (typeof input !== 'string' && input.headers) || {});
+    headers.set('X-Cruxwire-Account', ACCOUNT_ID);
+    init = { ...(init || {}), headers };
+  }
+  const res = await _rawFetch(input, init);
   if (res.status === 401 && !url.includes('/auth/')) location.href = '/login';
+  if (res.status === 409 && sameOrigin) {
+    try { if ((await res.clone().json()).accountChanged) onAccountChanged(); } catch (e) {}
+  }
   return res;
 };
+// Another tab signed in as someone else (loadMe there rewrote cw_uid).
+window.addEventListener('storage', (e) => {
+  if (e.key === 'cw_uid' && ACCOUNT_ID && e.newValue && e.newValue !== ACCOUNT_ID) onAccountChanged();
+});
 
 async function loadMe() {
   try { ME = await (await _rawFetch('/auth/me', { cache: 'no-store' })).json(); }
   catch (e) { return; }   // offline: keep going on the local cache
   if (multiUser() && !ME.user) { location.href = '/login'; throw new Error('Login required'); }
   // A different account on this browser: never show the previous one's cache.
+  // Article ids changed format in id version 2; an older cache is dropped too
+  // (the server copy was migrated and is the source of truth).
+  const uid = ME.user ? ME.user.id : 'owner';
+  ACCOUNT_ID = uid;
+  if (Number.isInteger(ME.historyRetentionDays) && ME.historyRetentionDays > 0) HISTORY_DAYS = ME.historyRetentionDays;
   try {
-    const uid = ME.user ? ME.user.id : 'owner';
     const prev = localStorage.getItem('cw_uid');
-    if (prev && prev !== uid) {
+    if ((prev && prev !== uid) || localStorage.getItem('cw_idv') !== '2') {
       [READ_KEY, LATER_KEY, HISTORY_KEY, VIEW_STATE_KEY, STATE_UPDATED_KEY, SOURCE_STATS_KEY, LEARNING_KEY]
         .forEach(k => localStorage.removeItem(k));
     }
     localStorage.setItem('cw_uid', uid);
+    localStorage.setItem('cw_idv', '2');
   } catch (e) {}
   const btn = document.getElementById('account-btn');
   if (btn && multiUser() && ME.user) {
@@ -4510,15 +4589,15 @@ async function renderUsersPane(pane) {
     return `<tr>
       <td class="feed-cell-name">${escapeHtml(u.display_name || u.username)}
         <div style="font-size:12px;color:var(--text3)">${escapeHtml(u.username)}${u.legacy ? ' · owner' : ''}${u.sso ? ' · SSO' : ''}${self ? ' · you' : ''}</div></td>
-      <td><select class="feed-select" ${self ? 'disabled' : ''} onchange="updateUser('${u.id}', { role: this.value })">
+      <td><select class="feed-select" ${self ? 'disabled' : ''} onchange="updateUser(${jsArg(u.id)}, { role: this.value })">
         <option value="user"${u.role === 'user' ? ' selected' : ''}>User</option>
         <option value="admin"${u.role === 'admin' ? ' selected' : ''}>Admin</option></select></td>
       <td style="color:var(--text2);font-size:12px">${u.disabled ? 'Disabled' : (u.last_login_at ? 'Last sign-in ' + escapeHtml(u.last_login_at.slice(0, 10)) : 'Never signed in')}</td>
       <td style="white-space:nowrap;text-align:right">
-        <button class="feed-btn" onclick="resetUserPassword('${u.id}', '${escapeAttr(u.username)}')">${u.has_password ? 'Reset password' : 'Set password'}</button>
-        ${u.sso ? `<button class="feed-btn" title="The next SSO sign-in creates or links an account again" onclick="unlinkSso('${u.id}', '${escapeAttr(u.username)}')">Unlink SSO</button>` : ''}
-        ${self ? '' : `<button class="feed-btn" onclick="updateUser('${u.id}', { disabled: ${!u.disabled} })">${u.disabled ? 'Enable' : 'Disable'}</button>`}
-        ${self || u.legacy ? '' : `<button class="feed-btn" onclick="deleteUser('${u.id}', '${escapeAttr(u.username)}')">Delete</button>`}
+        <button class="feed-btn" onclick="resetUserPassword(${jsArg(u.id)}, ${jsArg(u.username)})">${u.has_password ? 'Reset password' : 'Set password'}</button>
+        ${u.sso ? `<button class="feed-btn" title="The next SSO sign-in creates or links an account again" onclick="unlinkSso(${jsArg(u.id)}, ${jsArg(u.username)})">Unlink SSO</button>` : ''}
+        ${self ? '' : `<button class="feed-btn" onclick="updateUser(${jsArg(u.id)}, { disabled: ${!u.disabled} })">${u.disabled ? 'Enable' : 'Disable'}</button>`}
+        ${self || u.legacy ? '' : `<button class="feed-btn" onclick="deleteUser(${jsArg(u.id)}, ${jsArg(u.username)})">Delete</button>`}
       </td></tr>`;
   }).join('');
   pane.innerHTML = `
@@ -4677,7 +4756,7 @@ async function loadDigest() {
   } catch(err) {
     statusEl.innerHTML = `<div style="text-align:center;">
       <div style="font-size:13px;color:var(--text3);margin-bottom:8px;">Could not load digest</div>
-      <div style="font-size:12px;color:var(--text3);">${err.message}</div>
+      <div style="font-size:12px;color:var(--text3);">${escapeHtml(err.message)}</div>
     </div>`;
   }
 }
