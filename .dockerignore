@@ -1,0 +1,23 @@
+# Keep the build context small; the Dockerfile COPYs only what it needs.
+.git
+.github
+.claude
+.vscode
+.DS_Store
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+*.md
+logo.png
+docker-compose*.yaml
+Dockerfile
+/data/
+state.json
+digest.json
+feeds.json
+settings.json
+categories.json
+runs.json
+embeddings.json
