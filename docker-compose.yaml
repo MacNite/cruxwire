@@ -22,9 +22,13 @@ services:
       # Timezone the scheduler uses for the active-hours window. Without this
       # the container runs in UTC and runs fire in the wrong local window.
       # Override via .env or your shell, e.g. TZ=America/New_York.
-      TZ: ${TZ:-America/Los_Angeles}
+      TZ: ${TZ:-Europe/Berlin}
     volumes:
       - cruxwire-data:/data        # local named volume - no NAS share
+    # The app itself is tiny (pure stdlib); the RAM budget belongs to Ollama.
+    # On a ~10 GB CPU-only host, qwen3.5:4b + nomic-embed-text fit with
+    # OLLAMA_MAX_PARALLEL=1. Uncomment to bound this container explicitly:
+    # mem_limit: 512m
     env_file:
       - path: .env                  # optional: extra overrides
         required: false

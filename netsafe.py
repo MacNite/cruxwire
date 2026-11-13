@@ -38,6 +38,10 @@ class BlockedURL(Exception):
     """The URL (or a redirect / resolved address) is not allowed."""
 
 
+class ResolveError(BlockedURL):
+    """The host name could not be resolved (not a policy block)."""
+
+
 def is_ip_allowed(ip_str):
     """True if an IP address is a public, routable unicast address."""
     if ALLOW_PRIVATE:
@@ -86,11 +90,21 @@ def check_url(url):
     except ValueError:
         raise BlockedURL('Invalid port')
     try:
+        ipaddress.ip_address(p.hostname)
+        literal = True
+    except ValueError:
+        literal = False
+    try:
         addrs = _resolve(p.hostname, port)
     except (socket.gaierror, UnicodeError) as exc:
-        raise BlockedURL(f'Could not resolve host: {p.hostname} ({exc})')
+        if not literal and _proxy_configured(p.scheme):
+            # Behind an outbound proxy that does its own DNS (no local
+            # resolver), the proxy is the egress boundary; IP literals are
+            # still checked above/below.
+            return p
+        raise ResolveError(f'Could not resolve host: {p.hostname}')
     if not addrs:
-        raise BlockedURL(f'Could not resolve host: {p.hostname}')
+        raise ResolveError(f'Could not resolve host: {p.hostname}')
     for a in addrs:
         if not is_ip_allowed(a):
             raise BlockedURL(f'Destination address not allowed ({p.hostname})')

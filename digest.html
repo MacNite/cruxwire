@@ -674,6 +674,123 @@
        moves anything else. The layout only re-flows on the next visit. */
     .article-wrap.removed { opacity: 0; pointer-events: none; }
 
+
+    /* ── Voting (Like / Dislike) ────────────────────────── */
+    .vote-group { display: inline-flex; gap: 2px; margin-right: 4px; }
+    .vote-btn { background: none; border: 1px solid transparent; border-radius: 999px; padding: 3px 8px; font-size: 13px; line-height: 1; color: var(--text3); cursor: pointer; font-family: var(--font-body); -webkit-tap-highlight-color: transparent; transition: color .15s, background .15s, border-color .15s; }
+    .vote-btn:hover { color: var(--text); background: var(--surface2); }
+    .vote-btn:focus-visible, .ob-btn:focus-visible, .act:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+    .vote-btn[aria-pressed="true"].like { color: #3f9b2f; border-color: rgba(63,155,47,.45); background: rgba(63,155,47,.10); }
+    .vote-btn[aria-pressed="true"].dislike { color: #c2410c; border-color: rgba(194,65,12,.45); background: rgba(194,65,12,.10); }
+    .article-wrap.disliked { opacity: .55; }
+    .article-wrap.disliked:hover { opacity: .85; }
+    .why { display: block; font-size: 12px; color: var(--text3); margin: -2px 0 9px; line-height: 1.4; }
+    .why b { font-weight: 600; color: var(--text2); }
+    .thumb img.is-fallback { transform: none !important; }
+    /* The image (photo or illustration) covers the tinted label block; the
+       label only shows if both fail to load. */
+    .thumb img { position: relative; z-index: 1; }
+    .thumb .thumb-badge { z-index: 2; }
+
+    /* ── Header refresh ─────────────────────────────────── */
+    .hdr-btn.refresh[disabled] { opacity: .5; cursor: progress; }
+    .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 9px 16px; border-radius: 999px; font-size: 13px; z-index: 50; box-shadow: var(--shadow); max-width: calc(100vw - 32px); }
+
+    /* ── Compact (phone / Home Assistant) view ─────────── */
+    body.compact .page { padding: 0 12px 64px; max-width: 640px; }
+    body.compact .header { padding: 12px 0 10px; flex-wrap: wrap; gap: 8px; }
+    body.compact .masthead { font-size: 21px; }
+    body.compact .masthead .brand-logo { width: 26px; height: 26px; }
+    body.compact #header-date, body.compact .header-meta { display: none; }
+    body.compact .viewnav { overflow-x: auto; scrollbar-width: none; flex-wrap: nowrap; gap: 0; }
+    body.compact .viewnav::-webkit-scrollbar { display: none; }
+    body.compact .viewnav-search { min-width: 120px; }
+    body.compact .catbar { padding: 10px 0 14px; }
+    body.compact #digest-magazine { display: none !important; }
+    #compact-feed { display: none; }
+    body.compact #compact-feed { display: block; }
+    .cfeed { display: flex; flex-direction: column; gap: 22px; }
+    .ccard { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow); }
+    .ccard .thumb { aspect-ratio: 16 / 9; border-radius: 0; }
+    .ccard-body { padding: 12px 14px 6px; }
+    .ccard-title { font-family: var(--font-head); font-size: 18px; font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; margin: 6px 0 6px; }
+    .ccard-summary { font-size: 14px; color: var(--text2); margin-bottom: 8px; }
+    .ccard-meta { font-size: 12px; color: var(--text3); display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
+    .ccard-actions { display: flex; align-items: center; justify-content: space-between; gap: 4px; border-top: 1px solid var(--border); padding: 4px 6px; }
+    .ccard-actions .act, .ccard-actions .vote-btn { min-height: 44px; min-width: 44px; padding: 0 10px; font-size: 14px; }
+    .ccard-actions .act.open { color: var(--text2); }
+    .ccard-actions .act { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+    body.compact .viewnav-tab { white-space: nowrap; padding-left: 10px; padding-right: 10px; }
+    .cfeed-ctl { display: flex; gap: 10px; justify-content: center; margin: 26px 0 8px; flex-wrap: wrap; }
+    .cfeed-ctl .feed-btn { min-height: 44px; padding: 0 20px; }
+    .cfeed-note { text-align: center; font-size: 13px; color: var(--text3); }
+
+    /* ── Onboarding wizard ──────────────────────────────── */
+    .ob { max-width: 640px; margin: 18px auto 40px; }
+    .ob-steps { display: flex; gap: 6px; margin-bottom: 22px; }
+    .ob-step-dot { flex: 1; height: 4px; border-radius: 4px; background: var(--border2); }
+    .ob-step-dot.done { background: var(--brand); }
+    .ob h2 { font-family: var(--font-head); font-size: 28px; letter-spacing: -0.03em; line-height: 1.15; margin-bottom: 10px; }
+    .ob p.lead { color: var(--text2); font-size: 15px; margin-bottom: 18px; }
+    .ob ul.ob-points { margin: 0 0 22px 18px; color: var(--text2); font-size: 14px; display: grid; gap: 6px; }
+    .ob-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .ob-row + .ob-row { margin-top: 8px; }
+    .ob-btn { min-height: 44px; padding: 0 18px; border-radius: 999px; border: 1px solid var(--border2); background: var(--surface); color: var(--text); font-size: 14px; font-weight: 600; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    .ob-btn:hover:not(:disabled) { border-color: var(--text3); }
+    .ob-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .ob-btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+    .ob-btn.ghost { background: transparent; border-color: transparent; color: var(--text2); }
+    .ob-section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; margin-bottom: 16px; }
+    .ob-section h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 10px; }
+    .ob-feeds { list-style: none; display: grid; gap: 6px; }
+    .ob-feeds li { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: 14px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+    .ob-feeds li:last-child { border-bottom: 0; }
+    .ob-feeds .u { color: var(--text3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; max-width: 420px; }
+    .ob-input { flex: 1 1 200px; min-width: 0; min-height: 42px; }
+    .ob-msg { font-size: 13px; margin-top: 8px; }
+    .ob-msg.err { color: #c2410c; }
+    .ob-msg.ok { color: #3f9b2f; }
+    .ob-msg ul { margin: 6px 0 0 18px; color: var(--text2); }
+    .ob-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .ob-chip { border: 1px solid var(--border2); border-radius: 999px; padding: 6px 12px; font-size: 13px; background: transparent; color: var(--text2); cursor: pointer; min-height: 36px; }
+    .ob-chip:hover { color: var(--text); border-color: var(--text3); }
+    .ob-progress { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+    .ob-bar { flex: 1; height: 8px; background: var(--border); border-radius: 8px; overflow: hidden; }
+    .ob-bar > span { display: block; height: 100%; background: var(--brand); transition: width .3s ease; }
+    .ob-count { font-family: var(--font-head); font-weight: 700; font-size: 18px; white-space: nowrap; }
+    .ob-hints { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12.5px; color: var(--text3); margin-bottom: 14px; }
+    .ob-hints .met { color: #3f9b2f; }
+    .ob-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow); }
+    /* Mandatory image area: always a fixed 16:9 box — skeleton → photo → local illustration. */
+    .ob-media { position: relative; width: 100%; aspect-ratio: 16 / 9; background: linear-gradient(135deg, var(--surface2), var(--border2)); overflow: hidden; }
+    .ob-media .ob-ph { position: absolute; inset: 0; display: grid; place-items: center; font-family: var(--font-head); font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--text3); font-size: 13px; }
+    .ob-media img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .25s ease; }
+    .ob-media img.loaded { opacity: 1; }
+    .ob-skeleton { position: absolute; inset: 0; background: linear-gradient(100deg, transparent 20%, rgba(255,255,255,.35) 50%, transparent 80%) var(--surface2); background-size: 200% 100%; animation: ob-shimmer 1.2s linear infinite; }
+    :root.dark .ob-skeleton { background-image: linear-gradient(100deg, transparent 20%, rgba(255,255,255,.07) 50%, transparent 80%); }
+    @keyframes ob-shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+    .ob-media.ready .ob-skeleton { display: none; }
+    .ob-card-body { padding: 14px 16px 6px; }
+    .ob-card-meta { font-size: 12.5px; color: var(--text3); display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; }
+    .ob-card-title { font-family: var(--font-head); font-size: 21px; line-height: 1.22; letter-spacing: -0.015em; margin-bottom: 8px; }
+    .ob-card-desc { font-size: 14px; color: var(--text2); margin-bottom: 8px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
+    .ob-card-link { font-size: 13px; color: var(--brand); font-weight: 600; }
+    .ob-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 12px 16px 16px; }
+    .ob-actions .ob-btn { width: 100%; }
+    .ob-btn.like { color: #3f9b2f; border-color: rgba(63,155,47,.45); }
+    .ob-btn.dislike { color: #c2410c; border-color: rgba(194,65,12,.45); }
+    .ob-footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+    .ob-review { margin-top: 14px; }
+    .ob-review li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; list-style: none; }
+    .ob-review li .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ob-review li .v { font-size: 12px; color: var(--text3); white-space: nowrap; }
+    .ob-empty { text-align: center; padding: 36px 16px; color: var(--text2); }
+    .ob textarea { width: 100%; min-height: 84px; font-family: var(--font-body); }
+    @media (max-width: 520px) {
+      .ob h2 { font-size: 23px; }
+      .ob-card-title { font-size: 19px; }
+      .ob-actions { padding: 10px 12px 14px; }
+    }
   </style>
 </head>
 <body>
@@ -686,7 +803,8 @@
       <div class="header-meta" id="header-count"></div>
       <button class="run-pill" id="run-pill" style="display:none;"></button>
       <span class="sync-status" id="sync-status" data-state="idle" style="display:none;"></span>
-      <button class="hdr-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark">◐</button>
+      <button class="hdr-btn refresh" id="refresh-btn" onclick="refreshFeeds(this)" title="Fetch new stories from your feeds" aria-label="Refresh feeds">↻ Refresh</button>
+      <button class="hdr-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark" aria-label="Toggle light or dark theme">◐</button>
     </div>
   </header>
 
@@ -721,6 +839,15 @@
   <!-- ── Digest view ── -->
   <div class="view active" id="view-digest">
     <section id="search-results" class="list-view" style="display:none;"></section>
+    <!-- Compact single-column feed (?view=compact) for phones / Home Assistant -->
+    <section id="compact-feed" aria-label="Your feed">
+      <div class="cfeed" id="cfeed-list"></div>
+      <div class="cfeed-ctl">
+        <button class="feed-btn" id="cfeed-more" onclick="discoverMore()">Discover more</button>
+        <button class="feed-btn" onclick="refreshFeeds(this)">↻ Refresh feeds</button>
+      </div>
+      <p class="cfeed-note" id="cfeed-note"></p>
+    </section>
     <div id="digest-magazine">
       <section id="section-hero" class="hero"></section>
       <div class="cols">
@@ -746,6 +873,11 @@
     <div class="list-view" id="history-content"></div>
   </div>
 
+  <!-- ── First-run onboarding wizard ── -->
+  <div class="view" id="view-onboarding">
+    <div class="ob" id="onboarding-content" aria-live="polite"></div>
+  </div>
+
   <!-- ── Settings view ── -->
   <div class="view" id="view-settings">
     <div class="list-view" id="settings-content"></div>
@@ -763,6 +895,12 @@ function toggleTheme() {
   const isDark = document.documentElement.classList.toggle('dark');
   localStorage.setItem('theme', isDark ? 'dark' : 'light');
 }
+
+/* ── Layout mode ──────────────────────────────────────── */
+// `?view=compact` → single-column, touch-friendly feed (phones, Home Assistant
+// Webpage card). The default magazine layout is unchanged.
+const COMPACT = new URLSearchParams(location.search).get('view') === 'compact';
+if (COMPACT) document.body.classList.add('compact');
 
 /* ── Config ───────────────────────────────────────────── */
 const DIGEST_URL        = './digest.json';
@@ -953,7 +1091,12 @@ function applySharedState(state) {
     viewState: { ...state.viewState },
   };
 
-  currentView = sharedState.viewState.currentView;
+  // The wizard is a transient, local view: a sync echo must never pull the
+  // user out of it (or persist it as the view to restore on next load).
+  if (currentView !== 'onboarding') currentView = sharedState.viewState.currentView;
+  if (currentView === 'onboarding' && sharedState.viewState.currentView === 'onboarding') {
+    sharedState.viewState.currentView = 'digest';
+  }
   currentCat = sharedState.viewState.currentCat;
   digestCat = sharedState.viewState.digestCat;
 }
@@ -1038,6 +1181,7 @@ function rerenderActiveView() {
   if (currentView === 'history') renderHistory();
   else if (currentView === 'later') renderLater();
   else if (currentView === 'settings') renderSettings();
+  else if (currentView === 'onboarding') renderOnboarding();
   else render();
 }
 
@@ -1056,7 +1200,8 @@ async function refreshFromRemote() {
     const changed = statesDiffer(sharedState, remote);
     applySharedState(remote);
     saveLocalState(sharedState);
-    if (changed) rerenderActiveView();
+    const votesChanged = await loadVotes();
+    if ((changed || votesChanged) && currentView !== 'onboarding') rerenderActiveView();
   } catch (err) {
     console.warn('Remote state refresh failed:', err);
   } finally {
@@ -1075,7 +1220,10 @@ function setActiveView(view) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.querySelectorAll('.viewnav-tab').forEach(t => t.classList.remove('active'));
   document.getElementById('view-' + view).classList.add('active');
-  document.getElementById('vnav-' + view).classList.add('active');
+  document.getElementById('vnav-' + view)?.classList.add('active');
+  // The wizard is full-focus: hide the category bar while it's open.
+  const catbar = document.getElementById('catbar');
+  if (catbar) catbar.style.display = (view === 'onboarding') ? 'none' : '';
   // The search box rides the view-nav row but only applies to Home.
   const search = document.getElementById('digest-search');
   if (search) search.style.display = (view === 'digest') ? '' : 'none';
@@ -1090,7 +1238,8 @@ function switchView(view) {
   else currentCat = digestCat;
 
   currentView = view;
-  sharedState.viewState = { ...sharedState.viewState, currentView, currentCat, digestCat };
+  sharedState.viewState = { ...sharedState.viewState,
+    currentView: view === 'onboarding' ? (sharedState.viewState.currentView || 'digest') : view, currentCat, digestCat };
   saveSharedState().catch(() => {});
 
   setActiveView(view);
@@ -1100,6 +1249,7 @@ function switchView(view) {
   if (view === 'later')    renderLater();
   if (view === 'digest')   render();
   if (view === 'settings') renderSettings();
+  if (view === 'onboarding') renderOnboarding();
 }
 
 /* ── Helpers ──────────────────────────────────────────── */
@@ -1124,6 +1274,8 @@ function scoreChip(a) {
   const rows = [row('Base', r(base))];
   if (a.cluster_boost) rows.push(row('Coverage', `+${r(a.cluster_boost)}`));
   if (a.taste_boost)   rows.push(row('For you', `+${r(a.taste_boost)}`));
+  if (a.feedback_boost) rows.push(row('Likes', `${a.feedback_boost > 0 ? '+' : ''}${r(a.feedback_boost)}`));
+  if (a.source_boost)  rows.push(row('Publisher', `${a.source_boost > 0 ? '+' : ''}${r(a.source_boost)}`));
   rows.push(row('Source', `×${r(affinityFor(a.source))}`));
   rows.push(row('Score', r(eff), 'score-row-total'));
   return `<span class="score-chip">`
@@ -1146,10 +1298,13 @@ function catMeta(c) { return CATS[c] || { label: c, c: '#8a90a0' }; }
 function thumb(a) {
   const cat = catMeta(a.category);
   const tint = `color-mix(in srgb, ${cat.c} 22%, var(--surface2))`;
-  const ph = `<div class="ph">${cat.label || a.category}</div>`;
-  const im = a.image
-    ? `<img src="${a.image}" alt="" loading="lazy" onerror="this.style.display='none'">`
-    : '';
+  const ph = `<div class="ph">${escapeHtml(cat.label || a.category || '')}</div>`;
+  // Same reliable policy as onboarding: photo → local topic illustration (on
+  // error too) → tinted label block underneath. Never a broken-image icon.
+  const fb = fallbackFor(a);
+  const src = a.image || fb;
+  const im = `<img src="${escapeAttr(src)}" alt="" loading="lazy" referrerpolicy="no-referrer"`
+    + `${a.image ? '' : ' class="is-fallback"'} data-fallback="${escapeAttr(fb)}" onerror="imgFallback(this)">`;
   // Count badge when this card rolls up duplicates — clearly visible on the image.
   const others = (a._clusterOthers || []).length;
   const badge = others > 0 ? `<span class="thumb-badge">＋${others}</span>` : '';
@@ -1292,7 +1447,10 @@ function effectiveScore(article) {
   // Base relevance, plus same-topic coverage boost (cluster_boost) and the
   // personalization boost (taste_boost, baked in by the pipeline from what you
   // save/open), all lifted by the per-source affinity multiplier.
-  return ((article.score || 0) + (article.cluster_boost || 0) + (article.taste_boost || 0))
+  // Explicit likes/dislikes (feedback_boost) and publisher affinity
+  // (source_boost) come from the pipeline as well.
+  return ((article.score || 0) + (article.cluster_boost || 0) + (article.taste_boost || 0)
+          + (article.feedback_boost || 0) + (article.source_boost || 0))
     * affinityFor(article.source);
 }
 
@@ -1704,6 +1862,7 @@ function render() {
   }
   resultsEl.style.display = 'none';
   resultsEl.innerHTML = '';
+  if (COMPACT) { renderCompact(); return; }
   magazine.style.display = '';
 
   // Bucket and order by effectiveScore = (score + cluster_boost) × source-
@@ -1716,8 +1875,9 @@ function render() {
   // One ranked inbox, split into today (by score) and earlier (carried, by
   // recency). The front page draws today first; if today can't fill it (you've
   // cleared the top), it borrows the best of earlier so no section sits empty.
-  const today = dedupeToReps(allArticles.filter(a => isToday(a) && visible(a)))
-    .sort((a, b) => effectiveScore(b) - effectiveScore(a));
+  // Today is ranked by effectiveScore, then diversified (topic/publisher
+  // variety + an exploration share) — see diversifyOrder().
+  const today = diversifyOrder(dedupeToReps(allArticles.filter(a => isToday(a) && visible(a))));
   const earlier = dedupeToReps(allArticles.filter(a => !isToday(a) && visible(a)))
     .sort((a, b) => new Date(b.published_at) - new Date(a.published_at));
 
@@ -1773,12 +1933,13 @@ function relTime(a) {
 }
 function srcLine(a) {
   const t = relTime(a);
-  return `<span class="src"><span class="src-name">${a.source}</span>${t ? `<time>· ${t}</time>` : ''}</span>`;
+  return `<span class="src"><span class="src-name">${escapeHtml(a.publisher || a.source || '')}</span>${t ? `<time>· ${t}</time>` : ''}</span>`;
 }
 function cardActions(a) {
   return `<div class="card-actions">
+      ${voteButtons(a)}
       <button class="act later" onclick="saveForLater('${a.id}')">Read later</button>
-      <button class="act done" onclick="dismiss('${a.id}')">Done</button>
+      <button class="act done" onclick="dismiss('${a.id}')" title="Hide (not a dislike)">Done</button>
     </div>`;
 }
 const openLink = (a, inner) =>
@@ -1788,16 +1949,17 @@ function renderHero(lead, side) {
   const el = document.getElementById('section-hero');
   if (!lead) { el.innerHTML = '<p class="empty">No stories for this filter.</p>'; return; }
   const leadHTML = `
-    <article class="article-wrap lead" id="wrap-${lead.id}" style="max-height:9999px;">
+    <article class="article-wrap lead${voteClass(lead)}" id="wrap-${lead.id}" style="max-height:9999px;">
       ${thumbBlock(lead)}
       ${kicker(lead)}
       <h2 class="lead-title" title="${escapeAttr(lead.title)}">${openLink(lead, lead.title)}</h2>
       ${lead.summary ? `<p class="lead-summary">${lead.summary}</p>` : ''}
+      ${whyLine(lead)}
       ${clusterDisclosure(lead)}
       <div class="lead-foot">${srcLine(lead)} ${cardActions(lead)}</div>
     </article>`;
   const sideHTML = side.map(a => `
-    <article class="article-wrap mini" id="wrap-${a.id}" style="max-height:9999px;">
+    <article class="article-wrap mini${voteClass(a)}" id="wrap-${a.id}" style="max-height:9999px;">
       ${thumbBlock(a)}
       <div>
         ${kicker(a)}
@@ -1811,11 +1973,12 @@ function renderHero(lead, side) {
 
 function gridCardHTML(a) {
   return `
-    <article class="article-wrap card" id="wrap-${a.id}" style="max-height:9999px;">
+    <article class="article-wrap card${voteClass(a)}" id="wrap-${a.id}" style="max-height:9999px;">
       ${thumbBlock(a)}
       ${kicker(a)}
       <h3 class="card-title" title="${escapeAttr(a.title)}">${openLink(a, a.title)}</h3>
       ${a.summary ? `<p class="card-summary">${a.summary}</p>` : ''}
+      ${whyLine(a)}
       ${clusterDisclosure(a)}
       <div class="card-foot">${srcLine(a)} ${cardActions(a)}</div>
     </article>`;
@@ -1858,6 +2021,7 @@ function renderRail(articles, hidden = 0) {
         <div class="rail-meta"><span class="cdot" style="background:${catMeta(a.category).c}"></span><span>${a.source}</span></div>
         ${clusterDisclosure(a)}
         <div class="rail-actions">
+          ${voteButtons(a)}
           <button class="act later" onclick="saveForLater('${a.id}')">Later</button>
           <button class="act done" onclick="dismiss('${a.id}')">Done</button>
         </div>
@@ -2619,6 +2783,7 @@ window.saveCategories = async () => {
 /* ── Render Settings (sub-tabbed) ─────────────────────── */
 const SETTINGS_TABS = [
   { id: 'feeds',      label: 'Feeds' },
+  { id: 'personalize', label: 'Personalize' },
   { id: 'categories', label: 'Categories' },
   { id: 'filters',    label: 'Filters' },
   { id: 'models',     label: 'Models' },
@@ -2655,6 +2820,7 @@ function renderSettingsPane() {
   if (settingsTab === 'categories') { renderCategoriesPane(pane); return; }
   if (settingsTab === 'display') { renderDisplayPane(pane); return; }
   if (settingsTab === 'runs')  { renderRunsPane(pane); return; }
+  if (settingsTab === 'personalize') { renderPersonalizePane(pane); return; }
 
   // Every other tab needs /settings (and Models also needs /models).
   if (!appSettings || !appSettingsSchema || (settingsTab === 'models' && !availableModels)) {
@@ -3196,6 +3362,11 @@ window.triggerRefresh = async function() {
   if (btn) btn.disabled = true;
   try {
     const res = await fetch('/refresh', { method: 'POST' });
+    if (res.status === 409 || res.status === 429) {
+      const d = await res.json().catch(() => ({}));
+      setCfgStatus('refresh', 'muted', d.error || 'Already updating.');
+      return;
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     setCfgStatus('refresh', 'ok', 'Refresh triggered — watch the header for progress.');
     scheduleStatusPoll(800);   // surface the "Updating…" pill promptly
@@ -3228,6 +3399,850 @@ window.confirmResetLearning = function() {
   if (confirm('Reset all source affinity counters? This cannot be undone.')) {
     resetLearning();
   }
+};
+
+/* ── HTML escaping (all new templates escape feed-supplied text) ── */
+function escapeHtml(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/* ── Images: photo → local topic illustration, never a broken icon ── */
+const CAT_TOPIC = { ai: 'technology', tech: 'technology', devtools: 'technology', productivity: 'technology',
+  science: 'science', energy: 'energy', business: 'business', pm: 'business', world: 'world',
+  gaming: 'gaming', music: 'culture', photography: 'culture', woodworking: 'culture', health: 'health', sports: 'sports' };
+function fallbackFor(a) {
+  if (a && a.fallback_image) return a.fallback_image;
+  return `/static/fallback/${CAT_TOPIC[a && a.category] || 'general'}.svg`;
+}
+window.imgFallback = function(img) {
+  const fb = img.dataset.fallback;
+  if (fb && !img.classList.contains('is-fallback')) {
+    img.classList.add('is-fallback');
+    img.src = fb;
+  } else {
+    img.style.display = 'none';   // tinted label block underneath shows through
+  }
+};
+
+/* ── Toast ────────────────────────────────────────────── */
+let toastTimer = null;
+function toast(msg, ms = 2600) {
+  let el = document.getElementById('toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'toast'; el.className = 'toast'; el.setAttribute('role', 'status');
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.display = '';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.display = 'none'; }, ms);
+}
+
+/* ── Explicit feedback (Like / Dislike) ───────────────── */
+// Stored server-side (preferences.json) so votes follow you across devices.
+// Independent of read / saved / dismissed: a vote never hides or saves a story,
+// and Done (dismiss) is never counted as a dislike.
+let votes = {};
+
+async function loadVotes() {
+  try {
+    const r = await fetch('/feedback', { cache: 'no-store' });
+    if (!r.ok) return false;
+    const d = await r.json();
+    const next = d.votes || {};
+    const changed = JSON.stringify(next) !== JSON.stringify(votes);
+    votes = next;
+    return changed;
+  } catch (e) { return false; }
+}
+
+function voteClass(a) { return votes[a.id] === -1 ? ' disliked' : ''; }
+
+function voteButtons(a) {
+  const v = votes[a.id] || 0;
+  return `<span class="vote-group">`
+    + `<button class="vote-btn like" data-vote-id="${a.id}" data-v="1" aria-label="Like" title="Like — more like this" aria-pressed="${v === 1}" onclick="vote('${a.id}', 1)">▲</button>`
+    + `<button class="vote-btn dislike" data-vote-id="${a.id}" data-v="-1" aria-label="Dislike" title="Dislike — less like this" aria-pressed="${v === -1}" onclick="vote('${a.id}', -1)">▼</button>`
+    + `</span>`;
+}
+
+function whyLine(a) {
+  if (!a || !a.why) return '';
+  return `<span class="why" title="Why this story? It is close to a story you liked.">Why this story? Similar to <b>“${escapeHtml(a.why)}”</b></span>`;
+}
+
+function updateVoteUI(id) {
+  const v = votes[id] || 0;
+  document.querySelectorAll(`[data-vote-id="${id}"]`).forEach(b => {
+    b.setAttribute('aria-pressed', String(Number(b.dataset.v) === v));
+  });
+  const wrap = document.getElementById('wrap-' + id);
+  if (wrap) wrap.classList.toggle('disliked', v === -1);
+}
+
+// Toggle semantics: pressing the active vote again undoes it.
+window.vote = async function(id, v, context) {
+  const prev = votes[id] || 0;
+  const next = (context === 'onboarding') ? v : (prev === v ? 0 : v);
+  votes[id] = next;
+  if (!next) delete votes[id];
+  updateVoteUI(id);
+  try {
+    const r = await fetch('/feedback', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, vote: next || null, context }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    if (context !== 'onboarding' && next && prev !== next) {
+      toast(next === 1 ? 'Liked — similar stories will rank higher after the next refresh.'
+                       : 'Disliked — similar stories will rank lower after the next refresh.');
+    }
+    return d;
+  } catch (e) {
+    if (prev) votes[id] = prev; else delete votes[id];
+    updateVoteUI(id);
+    toast('Could not save your vote: ' + (e.message || e));
+    throw e;
+  }
+};
+
+/* ── Refresh (fetch new stories through the existing pipeline) ── */
+window.refreshFeeds = async function(btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/refresh', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 202) toast('Fetching new stories… the feed updates when the run finishes.');
+    else if (r.status === 409) toast('Already updating — hang tight.');
+    else if (r.status === 429) toast(d.error || 'Refreshed a moment ago — try again shortly.');
+    else toast('Refresh failed: ' + (d.error || `HTTP ${r.status}`));
+    scheduleStatusPoll(800);
+  } catch (e) {
+    toast('Refresh failed — is the server reachable?');
+  } finally {
+    if (btn) setTimeout(() => { btn.disabled = false; }, 1500);
+  }
+};
+
+/* ── Diversified ordering (mirrors pipeline.diversify) ── */
+// Best effectiveScore first, but each repeat of a category / publisher costs a
+// little, one category holds at most 4 of the top 10, and about one slot in
+// four goes to an exploration pick (outside your liked topics) when the
+// pipeline flagged any — so the feed never collapses onto one subject.
+function diversifyOrder(list) {
+  const share = (appSettings && typeof appSettings.exploration_share === 'number') ? appSettings.exploration_share : 0.25;
+  const period = share > 0 ? Math.round(1 / share) : 0;
+  const remaining = list.slice().sort((a, b) => effectiveScore(b) - effectiveScore(a));
+  const haveExplore = remaining.some(a => a.explore);
+  const tc = {}, sc = {}, out = [];
+  const topic = a => a.category || '';
+  const src = a => a.publisher || a.source || '';
+  while (remaining.length) {
+    const pos = out.length;
+    let pool = remaining;
+    if (period && haveExplore && pos % period === period - 1) {
+      const ex = remaining.filter(a => a.explore);
+      if (ex.length) pool = ex;
+    }
+    if (pos < 10) {
+      const capped = pool.filter(a => (tc[topic(a)] || 0) < 4);
+      if (capped.length) pool = capped;
+    }
+    let best = pool[0], bestV = -Infinity;
+    for (const a of pool) {
+      const v = effectiveScore(a) - 0.6 * (tc[topic(a)] || 0) - 0.4 * (sc[src(a)] || 0);
+      if (v > bestV) { bestV = v; best = a; }
+    }
+    remaining.splice(remaining.indexOf(best), 1);
+    out.push(best);
+    tc[topic(best)] = (tc[topic(best)] || 0) + 1;
+    sc[src(best)] = (sc[src(best)] || 0) + 1;
+  }
+  return out;
+}
+
+/* ── Compact feed (?view=compact) ─────────────────────── */
+// Single-column, touch-friendly list for phones and the Home Assistant
+// Webpage card. Order comes from GET /articles (server-ranked, diversified,
+// paged); "Discover more" walks further down that ranking, never repeating.
+// Offline / server error → falls back to ranking the loaded digest locally.
+const cfeed = { ids: [], next: 0, loading: false, cat: null, gen: undefined, done: false, local: false };
+
+function compactCardHTML(a) {
+  const others = (a._clusterOthers || []).length;
+  return `
+    <article class="article-wrap ccard${voteClass(a)}" id="wrap-${a.id}">
+      ${thumbBlock(a)}
+      <div class="ccard-body">
+        ${kicker(a)}
+        <h3 class="ccard-title">${openLink(a, escapeHtml(a.title))}</h3>
+        <div class="ccard-meta">${srcLine(a)}${others ? `<span>· ${others + 1} sources</span>` : ''}</div>
+        ${a.summary ? `<p class="ccard-summary">${escapeHtml(a.summary)}</p>` : ''}
+        ${whyLine(a)}
+        ${clusterDisclosure(a)}
+      </div>
+      <div class="ccard-actions">
+        ${voteButtons(a)}
+        <button class="act later" onclick="saveForLater('${a.id}')" aria-label="Save for later">Save</button>
+        <button class="act done" onclick="dismiss('${a.id}')" aria-label="Hide (not a dislike)">Hide</button>
+        <a class="act open" href="${escapeAttr(a.url)}" target="_blank" rel="noopener" onclick="openArticle('${a.id}','${escapeAttr(a.url)}'); return false;" aria-label="Open original article">Open ↗</a>
+      </div>
+    </article>`;
+}
+
+function compactArticle(id) {
+  const a = allArticles.find(x => x.id === id);
+  if (!a) return null;
+  const cid = a.cluster_id || a.id;
+  a._clusterOthers = allArticles.filter(x => (x.cluster_id || x.id) === cid && x !== a && !sharedState.readIds.has(x.id));
+  return a;
+}
+
+function renderCompact() {
+  if (cfeed.cat !== currentCat || cfeed.gen !== loadedGeneratedAt) {
+    Object.assign(cfeed, { ids: [], next: 0, done: false, cat: currentCat, gen: loadedGeneratedAt, local: false });
+    loadCompactPage();
+    return;
+  }
+  const list = document.getElementById('cfeed-list');
+  const items = cfeed.ids.map(compactArticle).filter(a => a && visible(a));
+  list.innerHTML = items.length ? items.map(compactCardHTML).join('')
+    : (cfeed.loading ? '<p class="empty">Loading your feed…</p>' : '<p class="empty">All caught up.</p>');
+  const more = document.getElementById('cfeed-more');
+  if (more) { more.disabled = cfeed.loading || cfeed.done; more.textContent = cfeed.loading ? 'Loading…' : 'Discover more'; }
+  const note = document.getElementById('cfeed-note');
+  if (note) note.textContent = cfeed.done
+    ? 'You’ve seen everything ranked so far — Refresh feeds to fetch new stories.' : '';
+}
+
+async function loadCompactPage() {
+  if (cfeed.loading || cfeed.done) return;
+  cfeed.loading = true;
+  renderCompact();
+  const PAGE = 15;
+  try {
+    if (cfeed.local) throw new Error('local');
+    const q = `/articles?offset=${cfeed.next}&limit=${PAGE}&category=${encodeURIComponent(currentCat)}`;
+    const r = await fetch(q, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    for (const a of d.articles || []) {
+      if (!allArticles.some(x => x.id === a.id)) allArticles.push(a);   // digest moved on: keep server copy
+      if (!cfeed.ids.includes(a.id)) cfeed.ids.push(a.id);
+    }
+    cfeed.next = d.next_offset ?? cfeed.next;
+    cfeed.done = d.next_offset == null;
+  } catch (e) {
+    // Offline or server error: rank the already-loaded digest locally.
+    cfeed.local = true;
+    const ranked = diversifyOrder(dedupeToReps(allArticles.filter(visible)));
+    const page = ranked.filter(a => !cfeed.ids.includes(a.id)).slice(0, PAGE);
+    cfeed.ids.push(...page.map(a => a.id));
+    cfeed.done = page.length < PAGE;
+  } finally {
+    cfeed.loading = false;
+    if (currentView === 'digest' && !digestSearchQuery.trim()) renderCompact();
+  }
+}
+
+window.discoverMore = function() { loadCompactPage(); };
+
+/* ── Onboarding wizard ────────────────────────────────── */
+const OB_STEPS = ['welcome', 'sources', 'train', 'finish'];
+const obState = { step: 'welcome', data: null, queue: [], busy: false, undo: [], msg: {},
+                  exhausted: false, reviewOpen: false, review: null, seedsOpen: false, finishing: null };
+
+function obProgress() {
+  return (obState.data && obState.data.progress) || { likes: 0, dislikes: 0, topics: [], minLikes: 10, recommendedDislikes: 3, recommendedTopics: 3, canFinish: false };
+}
+
+async function obFetchStatus(batch = false, extra = '') {
+  const exclude = obState.queue.map(c => c.id).join(',');
+  const url = `/onboarding?batch=${batch ? 1 : 0}&n=8${exclude ? '&exclude=' + exclude : ''}${extra}`;
+  const r = await fetch(url, { cache: 'no-store' });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  obState.data = { ...(obState.data || {}), ...d };
+  return d;
+}
+
+async function obPost(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const d = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, data: d };
+}
+
+window.openOnboarding = function(step = 'welcome') {
+  obState.step = step;
+  obState.msg = {};
+  if (step === 'train') { obState.queue = []; obState.exhausted = false; }
+  switchView('onboarding');
+};
+
+window.obGo = async function(step) {
+  if (step === 'sources' || step === 'train') {
+    const st = obState.data && obState.data.onboarding && obState.data.onboarding.status;
+    if (st === 'not_started' || st === 'skipped') {
+      const res = await obPost('/onboarding/status', { status: 'in_progress' });
+      if (res.ok && obState.data) obState.data.onboarding = res.data.onboarding;
+    }
+  }
+  obState.step = step;
+  obState.msg = {};
+  renderOnboarding();
+  window.scrollTo({ top: 0 });
+};
+
+window.obSkipForNow = async function() {
+  await obPost('/onboarding/status', { status: 'skipped' });
+  toast('You can train your feed anytime in Settings → Personalize.');
+  switchView('digest');
+};
+
+function obStepDots() {
+  const idx = OB_STEPS.indexOf(obState.step);
+  return `<div class="ob-steps" aria-hidden="true">${OB_STEPS.map((s, i) =>
+    `<span class="ob-step-dot${i <= idx ? ' done' : ''}"></span>`).join('')}</div>`;
+}
+
+function renderOnboarding() {
+  const el = document.getElementById('onboarding-content');
+  if (!el) return;
+  if (!obState.data) {
+    el.innerHTML = '<p class="empty">Loading…</p>';
+    obFetchStatus(false).then(renderOnboarding).catch(() => {
+      el.innerHTML = '<p class="empty">Could not reach the server. <button class="ob-btn" onclick="renderOnboarding()">Retry</button></p>';
+    });
+    return;
+  }
+  const s = obState.step;
+  el.innerHTML = obStepDots() + (s === 'welcome' ? obWelcomeHTML() : s === 'sources' ? obSourcesHTML()
+    : s === 'train' ? obTrainHTML() : obFinishHTML());
+  if (s === 'train') obAfterTrainRender();
+}
+window.renderOnboarding = renderOnboarding;
+
+function obWelcomeHTML() {
+  const ob = obState.data.onboarding || {};
+  const p = obProgress();
+  const resumable = ob.status === 'in_progress' && (p.likes > 0 || p.dislikes > 0);
+  const again = ob.status === 'completed' || ob.status === 'skipped';
+  return `
+    <h2>${again ? 'Retrain your feed' : 'Welcome to Cruxwire'}</h2>
+    <p class="lead">A private news reader that learns what you like. Everything runs on this server —
+      your feeds, votes and the AI models (via your local Ollama). Nothing is sent to a cloud service.</p>
+    <ul class="ob-points">
+      <li><b>1. Choose sources</b> — RSS feeds or Google News searches.</li>
+      <li><b>2. Rate stories</b> — like ${p.minLikes} you’d want to read, dislike a few you wouldn’t, skip the rest.</li>
+      <li><b>3. Get your digest</b> — ranked for you, and it keeps learning from every like and dislike.</li>
+    </ul>
+    <p class="lead" style="font-size:13px;">Personalization is optional — you can skip and use the plain ranked digest.</p>
+    <div class="ob-row">
+      ${resumable ? `<button class="ob-btn primary" onclick="obGo('train')">Resume (${p.likes}/${p.minLikes} likes)</button>
+                     <button class="ob-btn" onclick="obGo('sources')">Review sources</button>`
+                  : `<button class="ob-btn primary" onclick="obGo('sources')">Get started</button>`}
+      ${again ? `<button class="ob-btn ghost" onclick="switchView('digest')">Back to my feed</button>`
+              : `<button class="ob-btn ghost" onclick="obSkipForNow()">Skip for now</button>`}
+    </div>`;
+}
+
+function obMsg(key) {
+  const m = obState.msg[key];
+  return m ? `<div class="ob-msg ${m.kind}" role="${m.kind === 'err' ? 'alert' : 'status'}">${m.html}</div>` : '';
+}
+
+function obSourcesHTML() {
+  const feeds = obState.data.feeds || [];
+  const examples = obState.data.examples || [];
+  const catOpts = Object.keys(CATS).filter(k => k !== 'all')
+    .map(k => `<option value="${escapeAttr(k)}">${escapeHtml(CATS[k].label)}</option>`).join('');
+  const feedRows = feeds.length ? feeds.map(f => `
+      <li><span style="min-width:0;"><b>${escapeHtml(f.source)}</b><span class="u">${escapeHtml(f.url)}</span></span>
+        <button class="ob-chip" onclick="obRemoveFeed('${escapeAttr(encodeURIComponent(f.url))}')" aria-label="Remove ${escapeAttr(f.source)}">Remove</button></li>`).join('')
+    : '<li><span class="u" style="white-space:normal;">No sources yet — add one below or start from an example.</span></li>';
+  return `
+    <h2>Choose your sources</h2>
+    <p class="lead">Add at least one RSS/Atom feed; three or more varied sources give the best results.
+      Each feed is checked right away and you’ll see its latest headlines.</p>
+    <div class="ob-section">
+      <h3>Your sources (${feeds.length})</h3>
+      <ul class="ob-feeds">${feedRows}</ul>
+      ${obMsg('remove')}
+    </div>
+    <div class="ob-section">
+      <h3>Add an RSS feed</h3>
+      <div class="ob-row">
+        <input class="feed-input ob-input" id="ob-url" type="url" inputmode="url" placeholder="https://example.com/feed.xml" aria-label="Feed URL">
+      </div>
+      <div class="ob-row">
+        <input class="feed-input ob-input" id="ob-name" type="text" placeholder="Name (optional)" aria-label="Feed name">
+        <select class="feed-select" id="ob-cat" aria-label="Category">${catOpts}</select>
+        <button class="ob-btn primary" id="ob-add" onclick="obAddFeed()">Add &amp; check</button>
+      </div>
+      ${obMsg('add')}
+      <div style="margin-top:14px;">
+        <div class="settings-help" style="margin-bottom:8px;">Examples — tap to load into the form, then edit or add:</div>
+        <div class="ob-chips">${examples.map((x, i) =>
+          `<button class="ob-chip" onclick="obUseExample(${i})">${escapeHtml(x.source)}</button>`).join('')}</div>
+      </div>
+    </div>
+    <div class="ob-section">
+      <h3>Google News search</h3>
+      <div class="settings-help" style="margin-bottom:8px;">Turn any topic into a feed (e.g. “heat pumps”, “Bundesliga”, “battery storage”).</div>
+      <div class="ob-row">
+        <input class="feed-input ob-input" id="ob-gq" type="text" placeholder="Search terms" aria-label="Google News search terms">
+        <select class="feed-select" id="ob-glang" aria-label="Edition">
+          <option value="en-US|US">English (US)</option><option value="en-GB|GB">English (UK)</option>
+          <option value="de|DE">Deutsch (DE)</option><option value="fr|FR">Français (FR)</option>
+        </select>
+        <button class="ob-btn" onclick="obAddGoogle()">Add search</button>
+      </div>
+      ${obMsg('google')}
+    </div>
+    <div class="ob-footer">
+      <button class="ob-btn ghost" onclick="obGo('welcome')">← Back</button>
+      <span class="settings-help" style="margin:0;">${feeds.length && feeds.length < 3 ? 'Tip: 3+ varied sources work best.' : ''}</span>
+      <button class="ob-btn primary" onclick="obGo('train')" ${feeds.length ? '' : 'disabled'}>Continue →</button>
+    </div>`;
+}
+
+window.obUseExample = function(i) {
+  const x = (obState.data.examples || [])[i];
+  if (!x) return;
+  document.getElementById('ob-url').value = x.url;
+  document.getElementById('ob-name').value = x.source;
+  document.getElementById('ob-url').focus();
+};
+
+function obSampleHTML(d) {
+  const sample = (d.sample || []).slice(0, 5);
+  return `Added <b>${escapeHtml(d.feed.source)}</b>${d.count ? ` — ${d.count} articles` : ''}.`
+    + (sample.length ? `<ul>${sample.map(x => `<li>${escapeHtml(x.title)}</li>`).join('')}</ul>` : '');
+}
+
+async function obAddSource(body, key, btn) {
+  if (btn) btn.disabled = true;
+  obState.msg[key] = { kind: '', html: 'Checking feed…' };
+  renderOnboarding();
+  try {
+    const res = await obPost('/onboarding/sources', body);
+    if (res.ok && res.data.ok) {
+      obState.msg[key] = { kind: 'ok', html: res.data.duplicate ? 'That feed is already in your list.' : obSampleHTML(res.data) };
+      await obFetchStatus(false);
+      obState.queue = [];   // new sources → fresh candidates
+    } else {
+      obState.msg[key] = { kind: 'err', html: escapeHtml(res.data.error || 'Could not add that feed.') };
+    }
+  } catch (e) {
+    obState.msg[key] = { kind: 'err', html: 'Network error — is the server reachable?' };
+  }
+  renderOnboarding();
+}
+
+window.obAddFeed = function() {
+  const url = document.getElementById('ob-url').value.trim();
+  if (!url) { obState.msg.add = { kind: 'err', html: 'Enter a feed URL first.' }; renderOnboarding(); return; }
+  obAddSource({ url, source: document.getElementById('ob-name').value.trim(),
+                category: document.getElementById('ob-cat').value }, 'add', document.getElementById('ob-add'));
+};
+
+window.obAddGoogle = function() {
+  const q = document.getElementById('ob-gq').value.trim();
+  if (!q) { obState.msg.google = { kind: 'err', html: 'Enter some search terms.' }; renderOnboarding(); return; }
+  const [lang, country] = document.getElementById('ob-glang').value.split('|');
+  obAddSource({ query: q, lang, country, category: document.getElementById('ob-cat')?.value }, 'google');
+};
+
+window.obRemoveFeed = async function(encUrl) {
+  const url = decodeURIComponent(encUrl);
+  try {
+    const r = await fetch(`/feeds?url=${encodeURIComponent(url)}`, { method: 'DELETE' });
+    obState.msg.remove = r.ok ? null : { kind: 'err', html: 'Could not remove that feed.' };
+    await obFetchStatus(false);
+    obState.queue = [];
+  } catch (e) {
+    obState.msg.remove = { kind: 'err', html: 'Network error.' };
+  }
+  renderOnboarding();
+};
+
+/* Training */
+function obTrainHTML() {
+  const p = obProgress();
+  const pct = Math.min(100, Math.round(100 * p.likes / Math.max(1, p.minLikes)));
+  const c = obState.queue[0];
+  const errs = (obState.data.feedErrors || []);
+  const topicsN = (p.topics || []).length;
+  const card = c ? obCardHTML(c) : (obState.exhausted ? `
+      <div class="ob-card ob-empty">
+        <p style="margin-bottom:12px;"><b>No more stories to rate right now.</b></p>
+        <p style="margin-bottom:16px;font-size:13px;">Reload your feeds for fresh headlines, or add more sources.</p>
+        <div class="ob-row" style="justify-content:center;">
+          <button class="ob-btn primary" onclick="obReloadCandidates()">Reload feeds</button>
+          <button class="ob-btn" onclick="obGo('sources')">Add feeds</button>
+        </div>
+      </div>` : `<div class="ob-card"><div class="ob-media"><div class="ob-skeleton"></div></div><div class="ob-card-body"><p class="empty" style="padding:16px 0;">Loading stories…</p></div></div>`);
+  return `
+    <h2>Rate some stories</h2>
+    <p class="lead">Like stories you’d want to read; dislike ones you wouldn’t. Skip if unsure — skipping is never counted against a story.</p>
+    <div class="ob-progress" aria-label="Progress">
+      <div class="ob-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${p.minLikes}" aria-valuenow="${Math.min(p.likes, p.minLikes)}"><span style="width:${pct}%"></span></div>
+      <span class="ob-count">${p.likes}/${p.minLikes} likes</span>
+    </div>
+    <div class="ob-hints">
+      <span class="${topicsN >= p.recommendedTopics ? 'met' : ''}">Topics liked: ${topicsN} (aim for ~${p.recommendedTopics})</span>
+      <span class="${p.dislikes >= p.recommendedDislikes ? 'met' : ''}">Dislikes: ${p.dislikes} (${p.recommendedDislikes}–5 recommended)</span>
+      ${errs.length ? `<span style="color:#c2410c;">${errs.length} feed${errs.length > 1 ? 's' : ''} couldn’t be loaded: ${errs.map(e => escapeHtml(e.source || e.url)).join(', ')}</span>` : ''}
+    </div>
+    ${card}
+    <div class="ob-footer">
+      <button class="ob-btn ghost" onclick="obGo('sources')">← Sources</button>
+      <span class="ob-row">
+        <button class="ob-btn ghost" onclick="obUndo()" ${obState.undo.length ? '' : 'disabled'} title="Undo last (U)">↶ Undo</button>
+        <button class="ob-btn ghost" onclick="obToggleReview()" aria-expanded="${obState.reviewOpen}">Review votes (${p.likes + p.dislikes})</button>
+      </span>
+      <button class="ob-btn primary" onclick="obFinish()" ${p.canFinish ? '' : 'disabled'}
+        title="${p.canFinish ? 'Build my feed' : `Like ${p.minLikes - p.likes} more to finish`}">Finish →</button>
+    </div>
+    ${obState.reviewOpen ? obReviewHTML() : ''}
+    <details class="ob-section" style="margin-top:16px;" ${obState.seedsOpen ? 'open' : ''} ontoggle="obState.seedsOpen = this.open">
+      <summary style="cursor:pointer;font-weight:600;font-size:14px;">Already have articles you like? Paste their links</summary>
+      <div style="margin-top:10px;">
+        <textarea class="feed-input" id="ob-seeds" placeholder="One article URL per line (up to 10)" aria-label="Liked article URLs"></textarea>
+        <div class="ob-row" style="margin-top:8px;"><button class="ob-btn" onclick="obImportSeeds(this)">Import as likes</button></div>
+        ${obMsg('seeds')}
+      </div>
+    </details>
+    <p class="settings-help" style="margin-top:10px;">Keyboard: <b>L</b> like · <b>D</b> dislike · <b>S</b> skip · <b>U</b> undo</p>`;
+}
+
+function obFmtDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return isNaN(d) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function obCardHTML(c) {
+  const topic = (c.topic || 'news');
+  return `
+    <article class="ob-card" id="ob-card" data-id="${escapeAttr(c.id)}">
+      <div class="ob-media" id="ob-media">
+        <span class="ob-ph">${escapeHtml(topic)}</span>
+        <div class="ob-skeleton"></div>
+        <img id="ob-img" alt="" referrerpolicy="no-referrer" decoding="async">
+      </div>
+      <div class="ob-card-body">
+        <div class="ob-card-meta"><b>${escapeHtml(c.publisher || c.source)}</b>${obFmtDate(c.published_at) ? `<span>· ${obFmtDate(c.published_at)}</span>` : ''}<span>· ${escapeHtml(topic)}</span></div>
+        <h3 class="ob-card-title">${escapeHtml(c.title)}</h3>
+        ${c.description ? `<p class="ob-card-desc">${escapeHtml(c.description)}</p>` : ''}
+        <a class="ob-card-link" href="${escapeAttr(c.url)}" target="_blank" rel="noopener noreferrer">Read the article ↗</a>
+      </div>
+      <div class="ob-actions">
+        <button class="ob-btn dislike" onclick="obAct('dislike')" aria-label="Dislike" ${obState.busy ? 'disabled' : ''}>▼ Dislike</button>
+        <button class="ob-btn" onclick="obAct('skip')" aria-label="Skip" ${obState.busy ? 'disabled' : ''}>Skip</button>
+        <button class="ob-btn like" onclick="obAct('like')" aria-label="Like" ${obState.busy ? 'disabled' : ''}>▲ Like</button>
+      </div>
+    </article>`;
+}
+
+// Image resolution on the client: RSS image → /image (server og:image lookup,
+// cached) → local topic illustration. A skeleton shows meanwhile; the 16:9 box
+// never changes size and never shows a broken icon. Voting never waits on it.
+const obImageCache = {};
+function obLoadImage(c) {
+  const img = document.getElementById('ob-img');
+  const media = document.getElementById('ob-media');
+  if (!img || !media) return;
+  const stillCurrent = () => document.getElementById('ob-card')?.dataset.id === c.id;
+  let tried = new Set(), timer = null;
+  const finish = () => { clearTimeout(timer); media.classList.add('ready'); };
+  const useFallback = () => {
+    if (!stillCurrent()) return;
+    clearTimeout(timer);
+    img.onload = () => { img.classList.add('loaded'); finish(); };
+    img.onerror = () => { img.remove(); finish(); };   // topic label (.ob-ph) remains
+    img.src = c.fallback_image || fallbackFor(c);
+  };
+  const tryUrl = (url, next) => {
+    if (!url || tried.has(url)) { next(); return; }
+    tried.add(url);
+    clearTimeout(timer);
+    timer = setTimeout(() => { if (stillCurrent() && !img.classList.contains('loaded')) next(); }, 8000);
+    img.onload = () => { if (img.naturalWidth < 40) { next(); return; } img.classList.add('loaded'); finish(); obImageCache[c.id] = url; };
+    img.onerror = () => next();
+    img.src = url;
+  };
+  const resolveServer = async () => {
+    if (!stillCurrent()) return;
+    try {
+      const r = await fetch('/image?id=' + encodeURIComponent(c.id));
+      const d = r.ok ? await r.json() : {};
+      if (d.fallback_image) c.fallback_image = d.fallback_image;
+      if (stillCurrent()) tryUrl(d.image, useFallback);
+    } catch (e) { useFallback(); }
+  };
+  if (obImageCache[c.id]) tryUrl(obImageCache[c.id], resolveServer);
+  else if (c.image) tryUrl(c.image, resolveServer);
+  else resolveServer();
+}
+
+function obPreload(c) {
+  if (c && c.image && !obImageCache[c.id]) { const im = new Image(); im.referrerPolicy = 'no-referrer'; im.src = c.image; }
+}
+
+async function obEnsureQueue() {
+  if (obState.queue.length >= 3 || obState.exhausted || obState.loadingQueue) return;
+  obState.loadingQueue = true;
+  try {
+    const d = await obFetchStatus(true);
+    const have = new Set(obState.queue.map(c => c.id));
+    const fresh = (d.candidates || []).filter(c => !have.has(c.id));
+    obState.queue.push(...fresh);
+    obState.exhausted = !obState.queue.length && !!d.exhausted;
+  } catch (e) {
+    obState.msg.train = { kind: 'err', html: 'Could not load stories.' };
+  } finally {
+    obState.loadingQueue = false;
+  }
+}
+
+function obAfterTrainRender() {
+  const c = obState.queue[0];
+  if (c) {
+    obLoadImage(c);
+    obPreload(obState.queue[1]);
+  }
+  if (obState.queue.length < 3 && !obState.exhausted && !obState.loadingQueue) {
+    const hadCard = !!c;
+    obEnsureQueue().then(() => {
+      if (currentView === 'onboarding' && obState.step === 'train' && (!hadCard || !document.getElementById('ob-card'))) renderOnboarding();
+    });
+  }
+}
+
+window.obReloadCandidates = async function() {
+  obState.exhausted = false;
+  obState.queue = [];
+  renderOnboarding();
+  try { await obFetchStatus(true, '&force=1').then(d => { obState.queue = d.candidates || []; obState.exhausted = !!d.exhausted; }); }
+  catch (e) { obState.exhausted = true; }
+  renderOnboarding();
+};
+
+window.obAct = async function(kind) {
+  const c = obState.queue[0];
+  if (!c || obState.busy) return;
+  obState.busy = true;
+  try {
+    if (kind === 'skip') {
+      await obPost('/onboarding/skip', { id: c.id });
+    } else {
+      const d = await vote(c.id, kind === 'like' ? 1 : -1, 'onboarding');
+      if (d && d.progress) obState.data.progress = d.progress;
+    }
+    obState.undo.push({ card: c, kind });
+    if (obState.undo.length > 50) obState.undo.shift();
+    obState.queue.shift();
+    obState.review = null;
+  } catch (e) {
+    /* vote() already toasted; keep the card */
+  } finally {
+    obState.busy = false;
+  }
+  renderOnboarding();
+};
+
+window.obUndo = async function() {
+  const last = obState.undo.pop();
+  if (!last) return;
+  if (last.kind !== 'skip') {
+    try {
+      const d = await vote(last.card.id, 0, 'onboarding');
+      if (d && d.progress) obState.data.progress = d.progress;
+    } catch (e) { obState.undo.push(last); return; }
+  }
+  obState.queue.unshift(last.card);
+  obState.exhausted = false;
+  obState.review = null;
+  renderOnboarding();
+};
+
+window.obToggleReview = async function() {
+  obState.reviewOpen = !obState.reviewOpen;
+  if (obState.reviewOpen && !obState.review) await obLoadReview();
+  renderOnboarding();
+};
+
+async function obLoadReview() {
+  try {
+    const r = await fetch('/feedback?full=1', { cache: 'no-store' });
+    obState.review = (await r.json()).items || [];
+  } catch (e) { obState.review = []; }
+}
+
+function votesListHTML(items, onchange) {
+  if (!items) return '<p class="settings-help">Loading…</p>';
+  if (!items.length) return '<p class="settings-help">No votes yet.</p>';
+  return `<ul class="ob-review" style="padding:0;">${items.map(it => `
+    <li><span class="t" title="${escapeAttr(it.title)}">${it.vote === 1 ? '▲' : '▼'} ${escapeHtml(it.title)}</span>
+      <span class="v">${escapeHtml(it.source || '')}</span>
+      <button class="vote-btn like" aria-label="Like" aria-pressed="${it.vote === 1}" onclick="${onchange}('${escapeAttr(it.id)}', 1)">▲</button>
+      <button class="vote-btn dislike" aria-label="Dislike" aria-pressed="${it.vote === -1}" onclick="${onchange}('${escapeAttr(it.id)}', -1)">▼</button>
+      <button class="vote-btn" aria-label="Remove vote" title="Remove vote" onclick="${onchange}('${escapeAttr(it.id)}', 0)">✕</button></li>`).join('')}</ul>`;
+}
+
+function obReviewHTML() {
+  return `<div class="ob-section" style="margin-top:12px;"><h3>Your votes</h3>${votesListHTML(obState.review, 'obReviewVote')}</div>`;
+}
+
+window.obReviewVote = async function(id, v) {
+  try {
+    const d = await vote(id, v, 'onboarding');
+    if (d && d.progress) obState.data.progress = d.progress;
+    await obLoadReview();
+  } catch (e) {}
+  renderOnboarding();
+};
+
+window.obImportSeeds = async function(btn) {
+  const urls = (document.getElementById('ob-seeds').value || '').split(/\s+/).map(s => s.trim()).filter(Boolean).slice(0, 10);
+  if (!urls.length) { obState.msg.seeds = { kind: 'err', html: 'Paste at least one article link.' }; renderOnboarding(); return; }
+  btn.disabled = true; btn.textContent = 'Importing…';
+  const res = await obPost('/onboarding/seeds', { urls });
+  const results = (res.data && res.data.results) || [];
+  if (res.data && res.data.progress) obState.data.progress = res.data.progress;
+  const ok = results.filter(r => r.ok), bad = results.filter(r => !r.ok);
+  obState.msg.seeds = { kind: bad.length && !ok.length ? 'err' : 'ok', html:
+    (ok.length ? `Imported ${ok.length} like${ok.length > 1 ? 's' : ''}.` : '')
+    + (bad.length ? `<ul>${bad.map(b => `<li>${escapeHtml(b.url)} — ${escapeHtml(b.error)}</li>`).join('')}</ul>` : '') };
+  obState.seedsOpen = true;
+  obState.review = null;
+  ok.forEach(r => { votes[r.id] = 1; });
+  renderOnboarding();
+};
+
+/* Finish */
+window.obFinish = async function() {
+  obState.step = 'finish';
+  obState.finishing = { phase: 'saving' };
+  renderOnboarding();
+  const res = await obPost('/onboarding/complete', {});
+  if (!res.ok) {
+    obState.finishing = { phase: 'error', error: res.data.error || 'Could not finish.' };
+    renderOnboarding();
+    return;
+  }
+  obState.data.onboarding = res.data.onboarding;
+  obState.finishing = { phase: 'building', refresh: res.data.refresh };
+  renderOnboarding();
+  obWatchRun();
+};
+
+async function obWatchRun() {
+  for (let i = 0; i < 400 && obState.step === 'finish'; i++) {
+    let st = null;
+    try { st = await (await fetch('/status', { cache: 'no-store' })).json(); } catch (e) {}
+    if (st && !st.running) {
+      try {
+        const data = await (await fetch(DIGEST_URL, { cache: 'no-store' })).json();
+        applyDigestData(data);
+        pendingDigest = null;
+      } catch (e) {}
+      obState.finishing = { phase: 'ready' };
+      if (currentView === 'onboarding') renderOnboarding();
+      return;
+    }
+    obState.finishing.phaseLabel = st && st.phase;
+    if (currentView === 'onboarding') renderOnboarding();
+    await new Promise(r => setTimeout(r, 3000));
+  }
+}
+
+function obFinishHTML() {
+  const f = obState.finishing || {};
+  const p = obProgress();
+  if (f.phase === 'error') return `
+    <h2>Almost there</h2><p class="ob-msg err">${escapeHtml(f.error)}</p>
+    <div class="ob-row" style="margin-top:14px;"><button class="ob-btn primary" onclick="obGo('train')">Back to rating</button></div>`;
+  const building = f.phase === 'building' || f.phase === 'saving';
+  return `
+    <h2>${building ? 'Building your personalized digest…' : 'Your feed is ready'}</h2>
+    <p class="lead">Your taste profile starts from ${p.likes} like${p.likes === 1 ? '' : 's'} and ${p.dislikes} dislike${p.dislikes === 1 ? '' : 's'}
+      across ${(p.topics || []).length} topic${(p.topics || []).length === 1 ? '' : 's'}. It keeps learning from every ▲ / ▼ you give in the feed.</p>
+    ${building ? `<p class="settings-help"><span class="run-spinner"></span> ${f.phaseLabel ? 'Pipeline: ' + escapeHtml(f.phaseLabel) + ' — ' : ''}scoring new stories on your CPU can take a few minutes. You can open the feed now; it refreshes when the run finishes.</p>` : ''}
+    <div class="ob-row" style="margin-top:14px;">
+      <button class="ob-btn primary" onclick="obExit()">Open my feed</button>
+      <button class="ob-btn ghost" onclick="obGo('train')">Keep rating</button>
+    </div>
+    <p class="settings-help" style="margin-top:14px;">Revisit training anytime in Settings → Personalize.</p>`;
+}
+
+window.obExit = function() {
+  obState.step = 'welcome';
+  switchView('digest');
+  window.scrollTo({ top: 0 });
+};
+
+// Keyboard shortcuts while rating.
+document.addEventListener('keydown', (e) => {
+  if (currentView !== 'onboarding' || obState.step !== 'train') return;
+  if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  if (k === 'l') obAct('like');
+  else if (k === 'd') obAct('dislike');
+  else if (k === 's') obAct('skip');
+  else if (k === 'u') obUndo();
+});
+
+/* ── Settings → Personalize ───────────────────────────── */
+let personalizeVotes = null;
+function renderPersonalizePane(pane) {
+  if (!appSettings || !appSettingsSchema) {
+    pane.innerHTML = '<p class="empty" style="padding:16px 0;">Loading…</p>';
+    ensureSettingsData().then(() => { if (settingsTab === 'personalize') renderSettingsPane(); });
+    return;
+  }
+  const ob = (obState.data && obState.data.onboarding) || {};
+  const p = obProgress();
+  const statusLabel = { completed: 'Completed', in_progress: 'In progress', skipped: 'Skipped', not_started: 'Not started' }[ob.status] || '…';
+  pane.innerHTML = `
+    <div class="settings-section">
+      <div class="settings-h">Your taste profile</div>
+      <div class="settings-help">Onboarding: <b>${statusLabel}</b>${ob.completedAt ? ` (${new Date(ob.completedAt).toLocaleDateString()})` : ''}.
+        ${p.likes} likes · ${p.dislikes} dislikes · topics: ${(p.topics || []).map(escapeHtml).join(', ') || '—'}.
+        Likes and dislikes are separate from Read Later, Done (hide) and read state.</div>
+      <div class="cfg-actions">
+        <button class="feed-btn primary" onclick="openOnboarding('train')">Train preferences</button>
+        <button class="feed-btn" onclick="openOnboarding('sources')">Edit sources</button>
+        <button class="feed-btn" onclick="openOnboarding('welcome')">Restart wizard</button>
+      </div>
+    </div>
+    ${renderNumericGroup('personalization', 'Personalization tuning')}
+    <div class="settings-section">
+      <div class="settings-h">Votes</div>
+      <div id="personalize-votes">${votesListHTML(personalizeVotes, 'personalizeVote')}</div>
+    </div>`;
+  if (!obState.data) obFetchStatus(false).then(() => { if (settingsTab === 'personalize') renderSettingsPane(); }).catch(() => {});
+  if (personalizeVotes === null) {
+    fetch('/feedback?full=1', { cache: 'no-store' }).then(r => r.json()).then(d => {
+      personalizeVotes = d.items || [];
+      const el = document.getElementById('personalize-votes');
+      if (el) el.innerHTML = votesListHTML(personalizeVotes, 'personalizeVote');
+    }).catch(() => {});
+  }
+}
+
+window.personalizeVote = async function(id, v) {
+  try {
+    const d = await vote(id, v, 'onboarding');
+    if (d && d.progress && obState.data) obState.data.progress = d.progress;
+    personalizeVotes = null;
+  } catch (e) {}
+  if (settingsTab === 'personalize') renderSettingsPane();
 };
 
 /* ── Background sync ──────────────────────────────────── */
@@ -3385,8 +4400,14 @@ async function loadDigest() {
     catch (e) { return null; }
   })();
 
+  // Onboarding status (cheap: no candidate batch) + explicit votes.
+  const obPromise = (async () => {
+    try { const r = await fetch('/onboarding?batch=0', { cache: 'no-store' }); return r.ok ? await r.json() : null; }
+    catch (e) { return null; }
+  })();
+
   try {
-    const [data, remoteState, cats] = await Promise.all([digestPromise, statePromise, catsPromise]);
+    const [data, remoteState, cats, ob] = await Promise.all([digestPromise, statePromise, catsPromise, obPromise, loadVotes()]);
 
     buildCats(cats);   // before any render so nav/colors reflect the config
     applyDigestData(data);
@@ -3401,6 +4422,18 @@ async function loadDigest() {
     if (maybeDecayLearning()) saveSharedState().catch(() => {});
     saveLocalState(sharedState);
 
+    // First run (or an interrupted one): open the wizard instead of the feed.
+    // `?onboarding=1` forces it; `?view=compact` keeps the phone layout.
+    const forceOb = new URLSearchParams(location.search).get('onboarding') === '1';
+    if (ob && ob.onboarding) obState.data = ob;
+    if (currentView === 'onboarding') currentView = 'digest';
+    // An embedded/phone feed (Home Assistant card) always opens on Home.
+    if (COMPACT) { currentView = 'digest'; currentCat = digestCat || 'all'; }
+    if (forceOb || (ob && ob.onboarding && ['not_started', 'in_progress'].includes(ob.onboarding.status))) {
+      obState.step = 'welcome';
+      currentView = 'onboarding';
+    }
+
     setActiveView(currentView);
     buildCatNav();
     updateCatCounts();
@@ -3408,6 +4441,7 @@ async function loadDigest() {
     if (currentView === 'history')       renderHistory();
     else if (currentView === 'later')    renderLater();
     else if (currentView === 'settings') renderSettings();
+    else if (currentView === 'onboarding') renderOnboarding();
     else render();
 
     statusEl.style.display = 'none';

@@ -427,7 +427,7 @@ def _embed(text, embed_model=EMBED_MODEL):
     return None
 
 
-def image_fields(article, page_image=None, page_kind='og'):
+def image_fields(article, page_image=None, page_kind='og', cache=True):
     """Image metadata for a digest article, following the resolution order
     RSS media → RSS <img> → publisher og:/twitter:image → local fallback.
     `fallback_image` is always set so the UI never shows a blank/broken box."""
@@ -435,7 +435,7 @@ def image_fields(article, page_image=None, page_kind='og'):
     topic = images.infer_topic(article.get('title', ''), article.get('description', ''),
                                article.get('category', ''))
     image = rss or page_image
-    if image:
+    if image and cache:
         images.cache_put(article['url'], image, 'rss' if rss else page_kind)
     return {'image': image, 'image_kind': 'rss' if rss else ('og' if page_image else 'fallback'),
             'fallback_image': images.fallback_image(topic), 'topic': topic}

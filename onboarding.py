@@ -98,6 +98,8 @@ def inspect_feed(url, timeout=10, sample=5):
     try:
         resp = netsafe.fetch(url, timeout=timeout, limit=pipeline.FEED_LIMIT,
                              accept='application/rss+xml, application/atom+xml, application/xml, text/xml, */*')
+    except netsafe.ResolveError:
+        return {'ok': False, 'error': f'Could not find the host “{p.hostname}” — check the URL for typos.'}
     except netsafe.BlockedURL as exc:
         return {'ok': False, 'error': f'Blocked for safety: {exc}. Private/LAN addresses are not allowed '
                                       f'(set ALLOW_PRIVATE_FETCH=1 to permit them).'}

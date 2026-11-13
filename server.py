@@ -539,7 +539,7 @@ def ranked_articles(category='all', offset=0, limit=20):
         a = dict(a)
         a['vote'] = votes.get(a['id'], 0)
         if not a.get('fallback_image'):
-            a.update(pipeline.image_fields(a, a.get('image')))
+            a.update(pipeline.image_fields(a, a.get('image'), cache=False))
         page.append(a)
     nxt = offset + len(page)
     return {'generated_at': digest.get('generated_at'), 'total': total, 'offset': offset,
