@@ -16,7 +16,26 @@ Endpoints:
   GET  /settings PUT /settings  runtime-editable tuning knobs + models + blocklist
   GET  /models                installed Ollama models (for the model pickers)
   GET  /status                live pipeline status (running/phase/last run)
-  POST /refresh               trigger a pipeline run now
+  POST /refresh               trigger a pipeline run now (202 started / 409 running / 429 cooldown)
+
+Personalization / onboarding:
+  GET  /onboarding            status, progress, feeds, examples + a balanced candidate batch
+                              (?n=8&exclude=id,id&force=1 to rebuild the pool)
+  POST /onboarding/sources    validate (with sample headlines) and add an RSS feed or a
+                              Google News search ({url,source?,category?} | {query,lang?,country?})
+  POST /onboarding/status     {status: in_progress|skipped|not_started} (start / skip / reopen)
+  POST /onboarding/skip       {id} skip a candidate (NOT a dislike)
+  POST /onboarding/complete   validate minimum likes, mark complete, start a personalised run
+  POST /onboarding/seeds      {urls:[...]} import liked article URLs (SSRF-checked)
+  GET  /feedback              {votes:{id:vote}} (+ items[] with ?full=1)
+  POST /feedback              {id, vote: 1|-1|0|null} by server-known article id
+  GET  /image?id=             resolved preview image (RSS → og:image → local fallback)
+  GET  /articles              ranked, diversified, unread digest page (?offset&limit&category)
+  GET  /static/fallback/*.svg local fallback illustrations
+
+Security: mutating requests with a cross-site Origin are refused (CSRF guard);
+CORS is off unless CORS_ALLOW_ORIGIN is set; request bodies are size-capped.
+Deploy on a LAN/VPN or behind an authenticated reverse proxy.
 """
 import concurrent.futures
 import json
@@ -31,7 +50,10 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+import images
+import onboarding
 import pipeline
+import preferences
 import settings
 
 STATE_FILE  = os.environ.get('STATE_FILE', '/data/state.json')
@@ -41,6 +63,14 @@ STATIC_DIR  = os.environ.get('STATIC_DIR', '.')
 SEED_FEEDS  = os.environ.get('SEED_FEEDS', '')
 SEED_CATEGORIES = os.environ.get('SEED_CATEGORIES', '')
 PORT = int(os.environ.get('PORT', '8090'))
+# CORS is off by default (the UI is same-origin). Set to an origin list
+# (comma-separated) or '*' to re-enable for external integrations.
+CORS_ALLOW_ORIGIN = os.environ.get('CORS_ALLOW_ORIGIN', '').strip()
+# Optional CSP frame-ancestors value, e.g. "'self' https://ha.example.lan" to
+# allow only Home Assistant to embed the app. Unset = framing allowed.
+FRAME_ANCESTORS = os.environ.get('FRAME_ANCESTORS', '').strip()
+MAX_BODY_BYTES = int(os.environ.get('MAX_BODY_BYTES', str(4 * 1024 * 1024)))   # /state etc.
+SMALL_BODY_BYTES = 64 * 1024                                                   # votes, onboarding
 
 # History retention is a runtime-editable setting now (see settings.py); the env
 # var there remains the default. Read Later is curated and never aged out.
@@ -61,7 +91,9 @@ STATIC_TYPES = {
     '.ico': 'image/x-icon',
     '.png': 'image/png',
     '.json': 'application/json',
+    '.svg': 'image/svg+xml',
 }
+_FALLBACK_RE = re.compile(r'^/static/fallback/([a-z]{1,20})\.svg$')
 
 # Icon files served at the root, by exact name (no path traversal).
 ICON_FILES = ('favicon.ico', 'favicon-16x16.png', 'favicon-32x32.png',
@@ -281,46 +313,13 @@ _TITLE_RE = re.compile(
 
 
 def validate_feed_url(url, timeout=10):
-    """Fetch the URL and confirm it actually returns an RSS or Atom feed.
+    """Fetch the URL (SSRF-safe, size/time bounded) and confirm it actually
+    returns an RSS or Atom feed with articles.
 
-    Returns {'ok': bool, 'error': str?, 'title': str?, 'kind': 'rss'|'atom'?}.
+    Returns {'ok': bool, 'error': str?, 'title': str?, 'kind': 'rss'|'atom'?,
+    'sample': [...]?}.
     """
-    if not url or not isinstance(url, str):
-        return {'ok': False, 'error': 'URL is required'}
-    parsed = urlparse(url)
-    if parsed.scheme not in ('http', 'https') or not parsed.netloc:
-        return {'ok': False, 'error': 'URL must be http(s):// with a host'}
-
-    req = urllib.request.Request(url, headers={
-        'User-Agent': 'Mozilla/5.0 Cruxwire (feed validator)',
-        'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
-    })
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            status = resp.status if hasattr(resp, 'status') else resp.getcode()
-            if not (200 <= status < 300):
-                return {'ok': False, 'error': f'HTTP {status}'}
-            body_bytes = resp.read(8192)
-    except urllib.error.HTTPError as e:
-        return {'ok': False, 'error': f'HTTP {e.code}'}
-    except urllib.error.URLError as e:
-        return {'ok': False, 'error': f'Network error: {e.reason}'}
-    except Exception as e:
-        return {'ok': False, 'error': f'Fetch failed: {e}'}
-
-    body = body_bytes.decode('utf-8', errors='replace')
-    low = body.lower()
-    kind = None
-    if '<rss' in low or '<rdf:rdf' in low:
-        kind = 'rss'
-    elif '<feed' in low and 'xmlns' in low:
-        kind = 'atom'
-    if not kind:
-        return {'ok': False, 'error': 'Response does not look like RSS or Atom'}
-
-    m = _TITLE_RE.search(body)
-    title = m.group(1).strip() if m else None
-    return {'ok': True, 'kind': kind, 'title': title}
+    return onboarding.inspect_feed(url, timeout=timeout)
 
 
 def normalize_feed_payload(payload):
@@ -497,18 +496,106 @@ def settings_payload():
     }
 
 
+def ranked_articles(category='all', offset=0, limit=20):
+    """The digest as a ranked feed page: unread and unsaved stories only, one
+    representative per same-story cluster, re-ranked by the composite score
+    with topic/publisher diversity and the exploration share. Paging walks
+    further down the same ranking, so 'Discover more' never repeats items."""
+    try:
+        with open(DIGEST_FILE, 'r', encoding='utf-8') as fh:
+            digest = json.load(fh)
+    except Exception:
+        digest = {}
+    arts = [a for a in (digest.get('articles') or []) if isinstance(a, dict) and a.get('id')]
+    with _state_lock:
+        state = load_state()
+    read = set(r for r in (state.get('readIds') or []) if isinstance(r, str))
+    later = {i.get('id') for i in (state.get('later') or []) if isinstance(i, dict)}
+    hidden_clusters = {a.get('cluster_id') for a in arts if a['id'] in read or a['id'] in later}
+    reps = {}
+    for a in arts:
+        cid = a.get('cluster_id') or a['id']
+        if a['id'] in read or a['id'] in later or cid in hidden_clusters:
+            continue
+        if category and category != 'all' and a.get('category') != category:
+            continue
+        cur = reps.get(cid)
+        if cur is None or (a.get('cluster_rep') and not cur.get('cluster_rep')):
+            reps[cid] = a
+    for cid, rep in reps.items():
+        rep['cluster_others'] = [
+            {'id': o['id'], 'title': o.get('title'), 'url': o.get('url'),
+             'source': o.get('publisher') or o.get('source')}
+            for o in arts if (o.get('cluster_id') or o['id']) == cid and o is not rep
+            and o['id'] not in read][:6]
+    cfg = settings.load()
+    ranked = pipeline.diversify(list(reps.values()), explore_share=cfg['exploration_share'])
+    votes = preferences.votes_map()
+    total = len(ranked)
+    offset = max(0, offset)
+    limit = max(1, min(100, limit))
+    page = []
+    for a in ranked[offset:offset + limit]:
+        a = dict(a)
+        a['vote'] = votes.get(a['id'], 0)
+        if not a.get('fallback_image'):
+            a.update(pipeline.image_fields(a, a.get('image'), cache=False))
+        page.append(a)
+    nxt = offset + len(page)
+    return {'generated_at': digest.get('generated_at'), 'total': total, 'offset': offset,
+            'next_offset': nxt if nxt < total else None, 'articles': page}
+
+
+def _parse_vote(v):
+    if v is None:
+        return 0
+    if isinstance(v, bool):
+        raise ValueError('vote must be 1, -1, 0 or null')
+    if isinstance(v, (int, float)) and v in (1, -1, 0):
+        return int(v)
+    raise ValueError('vote must be 1, -1, 0 or null')
+
+
+class BodyTooLarge(Exception):
+    pass
+
+
 class StateHandler(BaseHTTPRequestHandler):
+    server_version = 'Cruxwire'
+    sys_version = ''
+
+    # ── response helpers ─────────────────────────────────────────────
+    def _cors(self):
+        if not CORS_ALLOW_ORIGIN:
+            return
+        if CORS_ALLOW_ORIGIN == '*':
+            self.send_header('Access-Control-Allow-Origin', '*')
+            return
+        origin = self.headers.get('Origin') or ''
+        allowed = [o.strip() for o in CORS_ALLOW_ORIGIN.split(',') if o.strip()]
+        if origin in allowed:
+            self.send_header('Access-Control-Allow-Origin', origin)
+            self.send_header('Vary', 'Origin')
+
+    def _security_headers(self):
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        if FRAME_ANCESTORS:
+            self.send_header('Content-Security-Policy', f'frame-ancestors {FRAME_ANCESTORS}')
+
     def _set_headers(self, status=200, content_type='application/json'):
         self.send_response(status)
         self.send_header('Content-Type', content_type)
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Cache-Control', 'no-store')
+        self._cors()
+        self._security_headers()
         self.end_headers()
 
     def _json(self, status, payload):
         self._set_headers(status)
         self.wfile.write(json.dumps(payload).encode('utf-8'))
 
-    def _serve_file(self, fs_path, content_type):
+    def _serve_file(self, fs_path, content_type, cache='no-cache'):
         try:
             with open(fs_path, 'rb') as fh:
                 data = fh.read()
@@ -523,8 +610,9 @@ class StateHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(data)))
         # Always revalidate static assets so a deploy shows up on a normal
         # reload — no hard-refresh needed after the UI changes.
-        self.send_header('Cache-Control', 'no-cache')
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Cache-Control', cache)
+        self._cors()
+        self._security_headers()
         self.end_headers()
         self.wfile.write(data)
 
@@ -543,12 +631,21 @@ class StateHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(data)))
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Cache-Control', 'no-store')
+        self._cors()
+        self._security_headers()
         self.end_headers()
         self.wfile.write(data)
 
-    def _read_json_body(self, allow_list=False):
-        length = int(self.headers.get('Content-Length', 0))
+    def _read_json_body(self, allow_list=False, max_bytes=SMALL_BODY_BYTES):
+        try:
+            length = int(self.headers.get('Content-Length', 0) or 0)
+        except ValueError:
+            return None, 'Invalid Content-Length'
+        if length < 0:
+            return None, 'Invalid Content-Length'
+        if length > max_bytes:
+            raise BodyTooLarge()
         body = self.rfile.read(length) if length else b''
         try:
             payload = json.loads(body.decode('utf-8') if body else '{}')
@@ -560,15 +657,72 @@ class StateHandler(BaseHTTPRequestHandler):
             return None, 'Payload must be an object'
         return payload, None
 
+    def _body_or_400(self, **kw):
+        """Read a JSON object body; on error reply 400 and return None."""
+        payload, err = self._read_json_body(**kw)
+        if err:
+            self._json(400, {'error': err})
+            return None
+        return payload
+
+    def _same_origin(self):
+        """CSRF guard for mutating requests: a browser always sends Origin on
+        cross-origin POST/PUT/DELETE; refuse it unless it matches the Host we
+        were reached on (or an explicitly allowed CORS origin). Non-browser
+        clients (curl, Home Assistant REST) send no Origin and pass."""
+        origin = self.headers.get('Origin')
+        if not origin:
+            return True
+        if CORS_ALLOW_ORIGIN == '*' or origin in [o.strip() for o in CORS_ALLOW_ORIGIN.split(',') if o.strip()]:
+            return True
+        host = (self.headers.get('X-Forwarded-Host') or self.headers.get('Host') or '').split(',')[0].strip().lower()
+        try:
+            o = urlparse(origin)
+        except ValueError:
+            return False
+        return bool(host) and (o.netloc or '').lower() == host
+
+    def _guard_mutation(self):
+        if self._same_origin():
+            return True
+        self._json(403, {'error': 'Cross-origin request refused'})
+        return False
+
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self._cors()
         self.send_header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
 
+    # ── routing ──────────────────────────────────────────────────────
+    def _dispatch(self, method):
+        if method != 'GET' and not self._guard_mutation():
+            return
+        try:
+            getattr(self, '_' + method.lower())()
+        except BodyTooLarge:
+            self._json(413, {'error': 'Request body too large'})
+        except BrokenPipeError:
+            pass
+
     def do_GET(self):
-        path = urlparse(self.path).path
+        self._dispatch('GET')
+
+    def do_PUT(self):
+        self._dispatch('PUT')
+
+    def do_POST(self):
+        self._dispatch('POST')
+
+    def do_DELETE(self):
+        self._dispatch('DELETE')
+
+    def _get(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        qs = parse_qs(parsed.query)
+        q1 = lambda k, d='': (qs.get(k) or [d])[0]
         if path == '/state':
             with _state_lock:
                 state = prune(load_state())
@@ -584,7 +738,7 @@ class StateHandler(BaseHTTPRequestHandler):
             self.send_header('Content-Disposition', 'attachment; filename="cruxwire-feeds.opml"')
             self.send_header('Content-Length', str(len(data)))
             self.send_header('Cache-Control', 'no-cache')
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self._cors()
             self.end_headers()
             self.wfile.write(data)
             return
@@ -604,23 +758,60 @@ class StateHandler(BaseHTTPRequestHandler):
             self._json(200, settings.load_categories())
             return
         if path == '/search':
-            qs = parse_qs(urlparse(self.path).query)
-            q = (qs.get('q') or [''])[0]
+            q = q1('q')[:300]
             try:
-                thr = float((qs.get('threshold') or [''])[0])
+                thr = float(q1('threshold'))
             except ValueError:
                 thr = pipeline.SEARCH_THRESHOLD
             results = pipeline.semantic_search(q, threshold=thr)
             self._json(200, {'query': q, 'results': results})
             return
         if path == '/feeds/check':
-            qs = parse_qs(urlparse(self.path).query)
-            url = (qs.get('url') or [''])[0]
-            result = validate_feed_url(url)
+            result = validate_feed_url(q1('url'))
             self._json(200 if result['ok'] else 400, result)
             return
         if path == '/digest.json':
             self._serve_digest()
+            return
+        if path == '/onboarding':
+            try:
+                n = int(q1('n', '8'))
+            except ValueError:
+                n = 8
+            exclude = [x for x in q1('exclude').split(',') if x][:200]
+            self._json(200, onboarding.status_payload(include_batch=q1('batch', '1') != '0',
+                                                      exclude=exclude, n=n,
+                                                      force_pool=q1('force') in ('1', 'true')))
+            return
+        if path == '/feedback':
+            out = {'votes': preferences.votes_map()}
+            if q1('full') in ('1', 'true'):
+                out['items'] = preferences.votes_list()
+            self._json(200, out)
+            return
+        if path == '/image':
+            res = onboarding.resolve_image(q1('id'))
+            if res is None:
+                self._json(404, {'error': 'Unknown article'})
+                return
+            self._json(200, res)
+            return
+        if path == '/articles':
+            try:
+                offset, limit = int(q1('offset', '0')), int(q1('limit', '20'))
+            except ValueError:
+                self._json(400, {'error': 'offset/limit must be integers'})
+                return
+            self._json(200, ranked_articles(q1('category', 'all')[:40], offset, limit))
+            return
+        m = _FALLBACK_RE.match(path)
+        if m:
+            name = m.group(1)
+            if name not in images.FALLBACK_TOPICS:
+                self.send_error(404, 'Not Found')
+                return
+            self._serve_file(os.path.join(STATIC_DIR, 'static', 'fallback', name + '.svg'),
+                             STATIC_TYPES['.svg'], cache='public, max-age=86400')
             return
         # Static assets (explicit whitelist — no path traversal).
         if path in ('/', '/index.html', '/digest.html'):
@@ -632,21 +823,19 @@ class StateHandler(BaseHTTPRequestHandler):
             return
         self.send_error(404, 'Not Found')
 
-    def do_PUT(self):
+    def _put(self):
         path = urlparse(self.path).path
         if path == '/settings':
-            payload, err = self._read_json_body()
-            if err:
-                self._json(400, {'error': err})
+            payload = self._body_or_400()
+            if payload is None:
                 return
             # settings.save validates/clamps and ignores unknown keys.
             settings.save(payload)
             self._json(200, settings_payload())
             return
         if path == '/categories':
-            payload, err = self._read_json_body(allow_list=True)
-            if err:
-                self._json(400, {'error': err})
+            payload = self._body_or_400(allow_list=True)
+            if payload is None:
                 return
             try:
                 cats = settings.save_categories(payload)
@@ -658,7 +847,7 @@ class StateHandler(BaseHTTPRequestHandler):
         if path != '/state':
             self.send_error(404, 'Not Found')
             return
-        payload, err = self._read_json_body()
+        payload, err = self._read_json_body(max_bytes=MAX_BODY_BYTES)
         if err:
             self.send_error(400, err)
             return
@@ -676,46 +865,114 @@ class StateHandler(BaseHTTPRequestHandler):
             save_state(state)
         self._json(200, state)
 
-    def do_POST(self):
+    def _post(self):
         path = urlparse(self.path).path
         if path == '/refresh':
-            pipeline.refresh_async()
-            self._json(202, {'status': 'refresh triggered'})
+            result = pipeline.refresh_async()
+            if result == 'started':
+                self._json(202, {'status': 'refresh triggered'})
+            elif result == 'running':
+                self._json(409, {'status': 'already running', 'error': 'A refresh is already running.'})
+            else:
+                self._json(429, {'status': 'cooldown',
+                                 'error': 'Refreshed recently — try again in a minute.'})
+            return
+        if path == '/feedback':
+            payload = self._body_or_400()
+            if payload is None:
+                return
+            aid = payload.get('id')
+            try:
+                vote = _parse_vote(payload.get('vote'))
+            except ValueError as exc:
+                self._json(400, {'error': str(exc)})
+                return
+            article, origin = onboarding.find_article(aid)
+            if article is None:
+                self._json(404, {'error': 'Unknown article id'})
+                return
+            if payload.get('context') == 'onboarding':
+                origin = 'onboarding'
+            entry, changed = preferences.set_vote(aid, article, vote, origin=origin or 'feed')
+            if vote and preferences.onboarding()['status'] == 'not_started':
+                preferences.set_status('in_progress')
+            self._json(200, {'id': aid, 'vote': entry['vote'] if entry else 0, 'changed': changed,
+                             'progress': onboarding.progress_payload()})
+            return
+        if path == '/onboarding/sources':
+            payload = self._body_or_400()
+            if payload is None:
+                return
+            self._onboarding_add_source(payload)
+            return
+        if path == '/onboarding/status':
+            payload = self._body_or_400()
+            if payload is None:
+                return
+            status = payload.get('status')
+            if status not in ('in_progress', 'skipped', 'not_started'):
+                self._json(400, {'error': 'status must be in_progress, skipped or not_started'})
+                return
+            ob = preferences.set_status(status)
+            self._json(200, {'onboarding': {k: v for k, v in ob.items() if k != 'skipped'}})
+            return
+        if path == '/onboarding/skip':
+            payload = self._body_or_400()
+            if payload is None:
+                return
+            article, _ = onboarding.find_article(payload.get('id'))
+            if article is None:
+                self._json(404, {'error': 'Unknown article id'})
+                return
+            preferences.add_skip(article['id'])
+            self._json(200, {'ok': True})
+            return
+        if path == '/onboarding/complete':
+            ok, out = onboarding.complete()
+            self._json(200 if ok else 400, out)
+            return
+        if path == '/onboarding/seeds':
+            payload = self._body_or_400()
+            if payload is None:
+                return
+            try:
+                results = onboarding.import_seeds(payload.get('urls'))
+            except ValueError as exc:
+                self._json(400, {'error': str(exc)})
+                return
+            self._json(200, {'results': results, 'progress': onboarding.progress_payload()})
             return
         if path == '/tldr':
-            payload, err = self._read_json_body()
-            if err:
-                self._json(400, {'error': err})
+            payload = self._body_or_400()
+            if payload is None:
                 return
             url = (payload or {}).get('url')
             title = (payload or {}).get('title') or ''
             if not isinstance(url, str) or not url.startswith('http'):
                 self._json(400, {'error': 'valid url required'})
                 return
-            result = pipeline.generate_tldr(url, str(title))
+            result = pipeline.generate_tldr(url, str(title)[:300])
             if result is None:
                 self._json(502, {'error': 'Could not summarise (Ollama may be down)'})
                 return
             self._json(200, result)
             return
         if path == '/feeds/import':
-            payload, err = self._read_json_body()
-            if err:
-                self._json(400, {'error': err})
+            payload = self._body_or_400(max_bytes=MAX_BODY_BYTES)
+            if payload is None:
                 return
             items = payload.get('feeds')
             if not isinstance(items, list):
                 self._json(400, {'error': 'feeds[] is required'})
                 return
             do_validate = payload.get('validate', True) is not False
-            self._json(200, import_feeds(items, do_validate))
+            self._json(200, import_feeds(items[:1000], do_validate))
             return
         if path != '/feeds':
             self.send_error(404, 'Not Found')
             return
-        payload, err = self._read_json_body()
-        if err:
-            self._json(400, {'error': err})
+        payload = self._body_or_400()
+        if payload is None:
             return
         feed, err = normalize_feed_payload(payload)
         if err:
@@ -743,7 +1000,46 @@ class StateHandler(BaseHTTPRequestHandler):
             save_feeds(feeds)
         self._json(201, feed)
 
-    def do_DELETE(self):
+    def _onboarding_add_source(self, payload):
+        """Validate (with sample headlines) and add one feed. Accepts a URL or
+        a Google News search query. Duplicate URLs are reported, not errors."""
+        url = payload.get('url')
+        if not url and payload.get('query'):
+            try:
+                url = onboarding.google_news_search_url(payload.get('query'), payload.get('lang') or 'en-US',
+                                                        payload.get('country') or 'US')
+            except ValueError as exc:
+                self._json(400, {'ok': False, 'error': str(exc)})
+                return
+        if not isinstance(url, str) or not url.strip():
+            self._json(400, {'ok': False, 'error': 'Enter a feed URL or a search query.'})
+            return
+        url = url.strip()[:2048]
+        with _feeds_lock:
+            existing = next((f for f in load_feeds() if isinstance(f, dict) and f.get('url') == url), None)
+        if existing:
+            self._json(200, {'ok': True, 'duplicate': True, 'feed': existing})
+            return
+        result = validate_feed_url(url)
+        if not result.get('ok'):
+            self._json(400, {'ok': False, 'url': url, 'error': result.get('error') or 'Invalid feed'})
+            return
+        cats = settings.load_categories()
+        keys = [c['key'] for c in cats]
+        category = payload.get('category') if payload.get('category') in keys else (keys[0] if keys else 'tech')
+        default_name = (('Google News: ' + str(payload.get('query')).strip()[:60]) if payload.get('query')
+                        else (result.get('title') or urlparse(url).hostname or url))
+        source = (payload.get('source') or '').strip()[:80] or default_name
+        feed = {'url': url, 'source': source, 'category': category}
+        with _feeds_lock:
+            feeds = load_feeds()
+            if not any(isinstance(f, dict) and f.get('url') == url for f in feeds):
+                feeds.append(feed)
+                save_feeds(feeds)
+        self._json(201, {'ok': True, 'feed': feed, 'title': result.get('title'),
+                         'count': result.get('count'), 'sample': result.get('sample') or []})
+
+    def _delete(self):
         if urlparse(self.path).path != '/feeds':
             self.send_error(404, 'Not Found')
             return
@@ -781,9 +1077,20 @@ class StateHandler(BaseHTTPRequestHandler):
         return
 
 
+def migrate_preferences():
+    """Create preferences.json on first start. An install that already has
+    reading activity is marked onboarding='skipped' so an upgrade doesn't throw
+    the user into the first-run wizard (it stays available in Settings)."""
+    state = load_state() if os.path.exists(STATE_FILE) else {}
+    existing = bool(state.get('history') or state.get('later') or state.get('readIds'))
+    if preferences.migrate_if_needed(existing):
+        print(f'preferences initialised (existing user: {existing})', flush=True)
+
+
 if __name__ == '__main__':
     seed_feeds_if_missing()
     seed_categories_if_missing()
+    migrate_preferences()
     pipeline.start_background(run_now=True)
     server = ThreadingHTTPServer(('0.0.0.0', PORT), StateHandler)
     print(f'Cruxwire server listening on http://0.0.0.0:{PORT}/', flush=True)

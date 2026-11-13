@@ -190,6 +190,44 @@ How your taste centroid (the target `taste_boost` aims at) is built, in [`pipeli
 
 ---
 
+## 4b. Explicit likes / dislikes (Settings → Personalize)
+
+Each article's embedding is compared with your most recent liked and disliked stories
+(up to `FEEDBACK_MAX_POS=120` / `FEEDBACK_MAX_NEG=80`). For each side the mean of the top-k
+(`FEEDBACK_TOP_K=2`) cosine similarities is calibrated linearly from
+[`FEEDBACK_SIM_LO=0.50`, `FEEDBACK_SIM_HI=0.80`] onto [0, 1], then:
+
+```
+feedback_boost = clamp(like_weight × pos − dislike_weight × neg, −cap, +cap)     # 1.5 / 1.0 / 2.0
+source_boost   = clamp(publisher_affinity × (likes − dislikes) / (likes + dislikes + 2), ±0.5)
+rank           = score + cluster_boost + taste_boost + feedback_boost + source_boost
+```
+
+These weights are **provisional** - tune them after a few days of real votes:
+
+- Liked topics not rising enough → raise *Like weight* or lower `FEEDBACK_SIM_LO`.
+- Unrelated stories getting boosted → raise `FEEDBACK_SIM_LO` (similarities from your embedding
+  model sit higher than expected).
+- One subject floods the top → lower the *cap*; the feed also enforces at most 4 of the top 10 per
+  category and penalises repeats of the same category/publisher.
+- Feed feels like an echo chamber → raise *Exploration share* (default 0.25 ≈ one slot in four goes to
+  a story outside your liked topics).
+
+Votes never mark a story read or saved; *Done* (hide) and onboarding *Skip* never count as dislikes.
+Feedback embeddings are cached (`embed_cache.json`), so votes cost no repeat inference; at most
+`FEEDBACK_EMBED_BUDGET=60` new ones are computed per run.
+
+## 4c. CPU budget
+
+- **New articles scored / run** (`max_new_scored`, default 40): only never-seen articles go to the chat
+  model, round-robin across feeds; the rest wait for the next run. Articles already scored in a
+  previous run reuse their score, summary, image and stored embedding.
+- `OLLAMA_MAX_PARALLEL=1` (env): one Ollama request at a time across the whole process (pipeline,
+  TL;DR, search, onboarding). *Scoring workers* can stay at 1-2; extra workers only parallelise page
+  fetches.
+- Benchmark: `python pipeline.py --benchmark 5` prints per-article timings and the projected run time
+  for your budget. Settings → Runs shows `avg_enrich_ms`, reused and deferred counts per run.
+
 ## 5. Deploy-time wiring (env only - restart required)
 
 Infrastructure, deliberately **not** in the Settings UI (shown read-only there). Set in

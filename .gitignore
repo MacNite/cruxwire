@@ -7,6 +7,11 @@ settings.json
 categories.json
 runs.json
 embeddings.json
+preferences.json
+image_cache.json
+embed_cache.json
+onboarding_pool.json
+*.log
 
 # Local environment / secrets - never commit
 .env

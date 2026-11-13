@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" role="img" aria-label="Technology illustration">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1e3a8a"/><stop offset="1" stop-color="#2b7fff"/></linearGradient></defs>
+  <rect width="640" height="360" fill="url(#g)"/>
+  <g fill="none" stroke="#fff" stroke-opacity=".55" stroke-width="3">
+    <rect x="250" y="110" width="140" height="140" rx="14"/>
+    <rect x="285" y="145" width="70" height="70" rx="6" fill="#fff" fill-opacity=".18"/>
+    <path d="M270 110v-30M300 110v-30M340 110v-30M370 110v-30M270 250v30M300 250v30M340 250v30M370 250v30M250 130h-30M250 160h-30M250 200h-30M250 230h-30M390 130h30M390 160h30M390 200h30M390 230h30"/>
+    <path d="M220 130h-60v-50h-60M220 230h-80v60h-50M420 160h70v-70h60M420 200h90v80h40" stroke-opacity=".3"/>
+  </g>
+  <g fill="#fff" fill-opacity=".45"><circle cx="100" cy="80" r="6"/><circle cx="90" cy="290" r="6"/><circle cx="550" cy="90" r="6"/><circle cx="550" cy="280" r="6"/></g>
+  <text x="24" y="338" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="15" font-weight="700" letter-spacing="2.5" fill="#fff" fill-opacity=".8">TECHNOLOGY</text>
+</svg>

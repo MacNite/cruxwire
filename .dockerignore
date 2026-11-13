@@ -21,3 +21,8 @@ settings.json
 categories.json
 runs.json
 embeddings.json
+tests/
+preferences.json
+image_cache.json
+embed_cache.json
+onboarding_pool.json

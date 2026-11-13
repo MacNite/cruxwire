@@ -11,10 +11,14 @@ WireGuard tailnet, or `localhost`), **not** on the public internet.
   port 8090 directly to the internet.** For remote access, put it behind a reverse proxy that adds
   authentication (Caddy/nginx basic auth, [Authelia](https://www.authelia.com),
   [Tailscale](https://tailscale.com), Cloudflare Access, …).
-- **No rate limiting or CSRF protection** on the mutating endpoints.
-- **It fetches URLs you give it.** The pipeline requests every feed you add and, for TL;DRs, fetches
-  the linked article pages. Treat your feed list as trusted input, and don't give the container network
-  access to internal services it has no reason to reach.
+- **CSRF guard, no rate limiting beyond refresh.** Mutating requests with a cross-site `Origin` are
+  refused and CORS is off by default, but anything that can reach the port without a browser can still
+  call the API. Manual refreshes can't overlap (409) and have a cooldown (429).
+- **It fetches URLs you give it - through an SSRF guard.** Feeds, article pages, preview images and
+  seed URLs are fetched via `netsafe.py`: http(s) only, private/loopback/link-local/reserved addresses
+  refused (DNS and connected-peer checks, every redirect re-validated), with timeouts and byte caps.
+  Behind an outbound proxy that resolves DNS itself, hostname checks fall back to the proxy. Still,
+  don't give the container network access to internal services it has no reason to reach.
 - **Runtime data is stored unencrypted** on the Docker volume (read history, Read Later, learned source
   preferences). Protect and back up the volume accordingly.
 

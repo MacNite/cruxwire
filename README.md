@@ -25,8 +25,22 @@ No build step, **no Python dependencies** (pure stdlib), no external services ot
   the scoring prompt - so "relevant" means what *you* actually care about. Editable in-app.
 - **Source-agnostic de-duplication** - articles about the same story (across outlets) are clustered
   by embedding similarity and shown as one card, with the other coverage collapsed under it.
-- **Personalization** - a per-source affinity multiplier and an embedding-based "taste" boost float
-  the sources and topics you open/save upward, and sink ones you dismiss. Learned automatically.
+- **First-run onboarding** - a phone-friendly wizard: pick RSS feeds (or Google News searches) with
+  instant validation and sample headlines, then rate image-preview cards (Like / Dislike / Skip) until
+  you have 10 likes. Resume anytime; retrain from Settings → Personalize.
+- **Explicit likes & dislikes** - ▲ / ▼ on every card. Each candidate is compared against *several* of
+  your liked and disliked examples (not one averaged vector), so multiple interests coexist; boosts are
+  calibrated and capped, publisher affinity is tracked separately, and ~25% of slots stay exploratory.
+  A cheap "Why this story?" line names the liked story it resembles. Votes never mark anything read or
+  saved, and Done (hide) is never a dislike.
+- **Implicit personalization** - a per-source affinity multiplier and an embedding-based "taste" boost
+  float the sources and topics you open/save upward, and sink ones you dismiss. Learned automatically.
+- **Reliable previews** - every card shows a 16:9 picture: RSS media → inline image → publisher
+  `og:image` → a local topic illustration. Never a broken image icon.
+- **Compact phone / Home Assistant view** - `/?view=compact` is a single-column, touch-friendly feed
+  with Refresh and Discover more. See [docs/home-assistant.md](docs/home-assistant.md).
+- **CPU-friendly** - one model job at a time, a per-run budget of new articles to score (default 40),
+  and already-scored articles / embeddings are reused instead of recomputed.
 - **Sticky retention** - unread stories are carried forward across runs and pruned by a rank-weighted
   lifespan inside a floor/ceiling band, so the inbox never goes dry or floods.
 - **Balanced magazine layout** - a hero + "Latest" grid with an "Earlier this week" rail that stays
@@ -106,16 +120,22 @@ Open `http://<host>:8090/`.
 > ⚠️ **There is no login.** Keep this on a trusted private network and don't expose port 8090 to the
 > internet - see [Security & deployment](#security--deployment).
 
-On first run the app seeds its feed list from [feeds.sample.json](feeds.sample.json) and the pipeline
-generates the first digest (give it a minute). Manage feeds in the UI's **Feeds** screen, or trigger
-a refresh with `curl -X POST http://<host>:8090/refresh`.
+On first open a **setup wizard** walks you through choosing sources (the bundled
+[feeds.sample.json](feeds.sample.json) list is pre-loaded and editable) and rating ~10 stories so the
+first digest is already personalized; you can skip it and retrain later from **Settings →
+Personalize**. Upgrading an existing install skips the wizard automatically. The pipeline generates
+the digest in the background (on a CPU-only host give it a few minutes). Manage feeds in the UI's
+**Feeds** screen, or trigger a refresh with `curl -X POST http://<host>:8090/refresh`.
+
+On a phone or in Home Assistant use `http://<host>:8090/?view=compact` - see
+[docs/home-assistant.md](docs/home-assistant.md).
 
 ### Requirements
 
 - Docker + Docker Compose
 - An [Ollama](https://ollama.com) server reachable over HTTP, with the models pulled:
   ```bash
-  ollama pull qwen3:8b      # chat: score / summarise / categorise
+  ollama pull qwen3.5:4b    # chat: score / summarise / categorise (CPU-friendly default)
   ollama pull nomic-embed-text    # embeddings: clustering / taste / semantic block
   ```
 
@@ -150,8 +170,16 @@ Also worth knowing:
 - **The pipeline fetches URLs you give it.** It requests every feed you add and, for TL;DRs, fetches
   the linked article pages. Treat your feed list as trusted input, and don't give the container
   network access to internal services it has no reason to reach.
-- **No rate limiting or CSRF protection** on the mutating endpoints - the trust model is "the network
-  is trusted," nothing more.
+- **Outbound fetches are SSRF-guarded.** Feed, article, image and seed-URL fetches (`netsafe.py`) are
+  http(s)-only, refuse loopback/private/link-local/reserved destinations (checked at DNS time *and* on
+  the connected socket), re-check every redirect, and cap time and size. Set `ALLOW_PRIVATE_FETCH=1`
+  only if you deliberately subscribe to feeds on your LAN.
+- **Cross-site requests are refused.** Mutating requests whose `Origin` doesn't match the host are
+  rejected (CSRF guard); CORS is off unless you set `CORS_ALLOW_ORIGIN`. Request bodies are size-capped
+  and manual refreshes can't overlap or queue (409 while running, 429 within a cooldown). There is
+  still no authentication - the trust model is "the network is trusted".
+- **Embedding in Home Assistant** - framing is allowed by default; set `FRAME_ANCESTORS` (e.g.
+  `'self' https://ha.example.lan`) to restrict which sites may embed the app.
 - **Runtime data is stored unencrypted** on the Docker volume (read history, Read Later, learned
   source preferences). Back up - and protect - the volume accordingly.
 
@@ -219,7 +247,14 @@ next run. The pipeline, feed validation, and UI all read from this one place.
 | `GET` | `/runs` | Recent pipeline run log (powers Settings → Runs) |
 | `GET` | `/categories` | Configured categories (key / label / color / interest) |
 | `GET` | `/search?q=&threshold=` | Semantic search - ranked digest matches by embedding similarity |
-| `POST` | `/refresh` | Trigger a pipeline run now |
+| `POST` | `/refresh` | Trigger a pipeline run now (202 started · 409 already running · 429 cooldown) |
+| `GET` | `/articles?offset=&limit=&category=` | Ranked, diversified page of unread stories (powers *Discover more*) |
+| `GET` / `POST` | `/feedback` | List votes (`?full=1` for details) / vote `{id, vote: 1 \| -1 \| 0 \| null}` by server-known id |
+| `GET` | `/onboarding` | Wizard status, progress, feeds and a balanced candidate batch (`?n=&exclude=&force=1`) |
+| `POST` | `/onboarding/sources` | Validate (with sample headlines) and add a feed, or a Google News search `{query, lang, country}` |
+| `POST` | `/onboarding/status` · `/skip` · `/complete` · `/seeds` | Start/skip/reopen · skip a card · finish (needs 10 likes) · import liked URLs |
+| `GET` | `/image?id=` | Resolved preview image for a known article (cached; falls back to a local illustration) |
+| `GET` | `/static/fallback/<topic>.svg` | Local fallback illustrations |
 
 ---
 
@@ -227,7 +262,9 @@ next run. The pipeline, feed validation, and UI all read from this one place.
 
 Mutable data lives on the `cruxwire-data` Docker volume (`/data` in the container):
 `state.json`, `feeds.json`, `digest.json`, `settings.json`, `runs.json`, `categories.json`,
-`embeddings.json` (article vectors for semantic search, rewritten each run). The app code is baked into the image, so
+`embeddings.json` (article vectors for semantic search, rewritten each run), `preferences.json`
+(likes/dislikes + onboarding status), and three bounded caches - `embed_cache.json`,
+`image_cache.json`, `onboarding_pool.json` - that are safe to delete. The app code is baked into the image, so
 rebuilds preserve your data; new settings keys fall back to their defaults automatically. Back up the
 volume to preserve your feed list, read history, and learned preferences.
 
@@ -248,6 +285,18 @@ python server.py
 Then open `http://localhost:8090/`. To work on the layout without a live Ollama/feed setup, point
 `FEEDS_FILE` at a nonexistent path (the scheduled run no-ops) and drop a real `digest.json` in place.
 
+Tests are stdlib `unittest` (no Ollama or network needed - a fake Ollama runs in-process):
+
+```bash
+python -m unittest discover -s tests
+```
+
+Benchmark scoring speed on your hardware before tuning *New articles scored / run*:
+
+```bash
+python pipeline.py --benchmark 5
+```
+
 ---
 
 ## Project layout
@@ -257,6 +306,12 @@ Then open `http://localhost:8090/`. To work on the layout without a live Ollama/
 | [server.py](server.py) | HTTP server: UI, state/settings/feeds API, digest serving, state pruning |
 | [pipeline.py](pipeline.py) | Ingestion pipeline + scheduler: fetch → carry-forward → score → cluster → retain |
 | [settings.py](settings.py) | Runtime-settings schema (drives the Settings form), validation, persistence |
+| [preferences.py](preferences.py) | Likes/dislikes + onboarding state (`preferences.json`) |
+| [onboarding.py](onboarding.py) | Wizard backend: feed inspection, candidate pool/rotation, seeds, completion |
+| [images.py](images.py) | Preview-image resolution, URL normalisation, Google News decoding, fallbacks |
+| [netsafe.py](netsafe.py) | SSRF-safe outbound HTTP used for every user/feed-supplied URL |
+| [static/fallback/](static/fallback/) | Local topic illustrations (original artwork, MIT) |
+| [tests/](tests/) | Unit, API and image/HTML contract tests |
 | [digest.html](digest.html) | Single-file frontend: views, ranking display, affinity learning, layout |
 | [TUNING.md](TUNING.md) | Every adjustable knob, interactions, and recipes |
 

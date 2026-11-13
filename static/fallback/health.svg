@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" role="img" aria-label="Health illustration">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#881337"/><stop offset="1" stop-color="#e84d9c"/></linearGradient></defs>
+  <rect width="640" height="360" fill="url(#g)"/>
+  <path d="M320 290c-90-60-140-105-140-160 0-38 30-65 66-65 30 0 52 18 74 46 22-28 44-46 74-46 36 0 66 27 66 65 0 55-50 100-140 160z" fill="#fff" fill-opacity=".2" stroke="#fff" stroke-opacity=".5" stroke-width="3"/>
+  <path d="M120 185h110l20-40 30 85 28-65 18 20h194" fill="none" stroke="#fff" stroke-opacity=".75" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+  <text x="24" y="338" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="15" font-weight="700" letter-spacing="2.5" fill="#fff" fill-opacity=".8">HEALTH</text>
+</svg>

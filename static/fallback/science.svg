@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" role="img" aria-label="Science illustration">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3b0764"/><stop offset="1" stop-color="#7b5cff"/></linearGradient></defs>
+  <rect width="640" height="360" fill="url(#g)"/>
+  <g fill="none" stroke="#fff" stroke-opacity=".55" stroke-width="3">
+    <ellipse cx="320" cy="180" rx="150" ry="52"/>
+    <ellipse cx="320" cy="180" rx="150" ry="52" transform="rotate(60 320 180)"/>
+    <ellipse cx="320" cy="180" rx="150" ry="52" transform="rotate(-60 320 180)"/>
+  </g>
+  <circle cx="320" cy="180" r="20" fill="#fff" fill-opacity=".6"/>
+  <g fill="#fff" fill-opacity=".35"><circle cx="80" cy="70" r="3"/><circle cx="560" cy="60" r="2"/><circle cx="590" cy="300" r="3"/><circle cx="60" cy="290" r="2"/><circle cx="140" cy="200" r="2"/><circle cx="510" cy="190" r="2"/></g>
+  <text x="24" y="338" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="15" font-weight="700" letter-spacing="2.5" fill="#fff" fill-opacity=".8">SCIENCE</text>
+</svg>
