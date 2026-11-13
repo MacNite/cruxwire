@@ -1,5 +1,9 @@
 FROM python:3.12-slim
 
+LABEL org.opencontainers.image.title="Cruxwire" \
+      org.opencontainers.image.source="https://github.com/MacNite/cruxwire" \
+      org.opencontainers.image.licenses="MIT"
+
 # tzdata so the scheduler honours TZ (set in compose). Without it the slim
 # image has no zoneinfo and the container runs in UTC, firing runs in the
 # wrong local window.

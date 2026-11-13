@@ -93,8 +93,13 @@ See [TUNING.md](TUNING.md) for every adjustable knob.
 
 ```bash
 cp .env.example .env          # then set OLLAMA_HOST to your Ollama server
-docker compose up -d --build
+docker compose pull           # prebuilt image from ghcr.io/macnite/cruxwire
+docker compose up -d
 ```
+
+Prefer building from source? Use `docker compose up -d --build` instead. Images are published to
+GitHub Container Registry for `linux/amd64` and `linux/arm64`: `:latest` tracks `main`, and version
+tags (`v1.2.3`) publish `:1.2.3`, `:1.2` and `:1`.
 
 Open `http://<host>:8090/`.
 

@@ -1,5 +1,8 @@
 services:
   cruxwire:
+    # Prebuilt image from GitHub Container Registry. To build from source
+    # instead, run `docker compose up -d --build` (uses the local Dockerfile).
+    image: ghcr.io/macnite/cruxwire:latest
     build: .
     container_name: cruxwire
     restart: unless-stopped
