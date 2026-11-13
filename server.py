@@ -902,8 +902,12 @@ class StateHandler(BaseHTTPRequestHandler):
             if payload is None:
                 return True
             try:
-                user = users.create_user(payload.get('username'), payload.get('password'), 'admin',
-                                         payload.get('display_name'))
+                user = users.create_first_admin(payload.get('username'), payload.get('password'),
+                                                payload.get('display_name'))
+            except users.SetupClosed:
+                # Someone else completed setup while this request was in flight.
+                self._json(409, {'error': 'Setup is already complete.'})
+                return True
             except ValueError as exc:
                 self._json(400, {'error': str(exc)})
                 return True
@@ -1008,6 +1012,12 @@ class StateHandler(BaseHTTPRequestHandler):
                 getattr(self, '_' + method.lower())()
         except BodyTooLarge:
             self._json(413, {'error': 'Request body too large'})
+        except users.AccountStoreError as exc:
+            # Fail closed: never fall back to "no accounts" (which would reopen
+            # first-admin setup). An operator has to restore users.json.
+            print(f'account store error: {exc}', flush=True)
+            self._json(503, {'error': 'Account storage is unavailable. An administrator must '
+                                      'restore users.json (see the server log).'})
         except BrokenPipeError:
             pass
 
@@ -1404,7 +1414,10 @@ if __name__ == '__main__':
     if oidc.enabled():
         print(f'auth ({users.AUTH_MODE}): single sign-on via {oidc.OIDC_ISSUER} '
               f'(password sign-in: {users.LOCAL_LOGIN})', flush=True)
-    msg = users.bootstrap()
+    try:
+        msg = users.bootstrap()
+    except users.AccountStoreError as exc:
+        raise SystemExit(f'auth ({users.AUTH_MODE}): refusing to start: {exc}')
     if msg:
         print(f'auth ({users.AUTH_MODE}): {msg}', flush=True)
     seed_feeds_if_missing()

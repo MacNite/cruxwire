@@ -226,14 +226,60 @@ def check_password_policy(password):
 # ──────────────────────────────────────────────────────────────────────
 # Accounts
 # ──────────────────────────────────────────────────────────────────────
+class AccountStoreError(RuntimeError):
+    """users.json exists but cannot be read or parsed (or is missing although
+    accounts were evidently set up). Fail closed: never treat this as a fresh
+    install, which would reopen first-admin enrollment."""
+
+
+USERS_BACKUP_FILE = USERS_FILE + '.bak'
+# Written with the first account; its presence means "accounts were set up",
+# so a later missing users.json is a fault, not a fresh install.
+INIT_MARKER = os.path.join(os.path.dirname(USERS_FILE) or '.', '.accounts-initialized')
+
+
+def _previously_initialized():
+    """Evidence that accounts existed even though users.json is gone."""
+    if os.path.exists(INIT_MARKER) or os.path.exists(USERS_BACKUP_FILE):
+        return True
+    try:
+        return any(_UID_RE.match(n) for n in os.listdir(USERS_DIR))
+    except OSError:
+        return False
+
+
 def _load():
-    data = _read_json(USERS_FILE, {})
+    try:
+        with open(USERS_FILE, 'r', encoding='utf-8') as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        if _previously_initialized():
+            raise AccountStoreError(
+                f'{USERS_FILE} is missing but accounts existed before; restore it '
+                f'(a backup may be at {USERS_BACKUP_FILE}).')
+        return []
+    except (OSError, ValueError) as exc:
+        raise AccountStoreError(f'{USERS_FILE} is unreadable or invalid: {exc}') from exc
     users = data.get('users') if isinstance(data, dict) else None
-    return [u for u in (users or []) if isinstance(u, dict) and _UID_RE.match(u.get('id') or '')]
+    if not isinstance(users, list):
+        raise AccountStoreError(f'{USERS_FILE} has no valid "users" list')
+    return [u for u in users if isinstance(u, dict) and _UID_RE.match(u.get('id') or '')]
 
 
 def _save(users):
+    # Keep the previous good copy so a damaged file can be restored by hand.
+    if os.path.exists(USERS_FILE):
+        try:
+            shutil.copy2(USERS_FILE, USERS_BACKUP_FILE)
+        except OSError:
+            pass
     _atomic_write(USERS_FILE, {'version': 1, 'users': users})
+    if users and not os.path.exists(INIT_MARKER):
+        try:
+            with open(INIT_MARKER, 'w', encoding='utf-8') as fh:
+                fh.write(_now_iso() + '\n')
+        except OSError:
+            pass
 
 
 def public(user):
@@ -287,13 +333,21 @@ def normalize_username(username):
     return username
 
 
-def _insert(username, role, display_name, unique_username=False, **extra):
+class SetupClosed(Exception):
+    """First-admin setup was attempted after an account already exists."""
+
+
+def _insert(username, role, display_name, unique_username=False, first_only=False, **extra):
     """Add an account record. The first account ever created becomes the
-    owner of the existing single-user data (and is always an admin)."""
+    owner of the existing single-user data (and is always an admin).
+    `first_only` makes the insert atomic with the "no accounts yet" check:
+    it raises SetupClosed if anyone got there first."""
     if role not in ROLES:
         raise ValueError('Role must be admin or user.')
     with _lock:
         users = _load()
+        if first_only and users:
+            raise SetupClosed('Setup is already complete.')
         taken = {u.get('username') for u in users}
         if username in taken:
             if not unique_username:
@@ -327,6 +381,15 @@ def create_user(username, password, role='user', display_name=None):
     if role not in ROLES:
         raise ValueError('Role must be admin or user.')
     return _insert(username, role, display_name, password_hash=hash_password(password))
+
+
+def create_first_admin(username, password, display_name=None):
+    """One-time setup: create the first admin only if there are still no
+    accounts, decided under the users lock (raises SetupClosed otherwise)."""
+    username = normalize_username(username)
+    check_password_policy(password)
+    return _insert(username, 'admin', display_name, first_only=True,
+                   password_hash=hash_password(password))
 
 
 # ── SSO-linked accounts (see oidc.py) ──────────────────────────────────
@@ -504,12 +567,17 @@ def bootstrap():
     if not enabled() or count():
         return None
     if ADMIN_USERNAME and ADMIN_PASSWORD:
-        u = create_user(ADMIN_USERNAME, ADMIN_PASSWORD, 'admin')
+        try:
+            u = create_first_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
+        except SetupClosed:
+            return None
         return f'created admin account {u["username"]!r} (owns the existing data)'
     return 'no accounts yet - open the app to create the first admin'
 
 
 def needs_setup():
+    """True only for a genuinely fresh install. An unreadable account store
+    raises AccountStoreError rather than reporting "no accounts"."""
     return enabled() and count() == 0
 
 
