@@ -33,6 +33,7 @@ import threading
 from datetime import datetime, timezone
 
 import images
+import users
 
 PREFERENCES_FILE = os.environ.get('PREFERENCES_FILE', '/data/preferences.json')
 MAX_FEEDBACK = int(os.environ.get('MAX_FEEDBACK', '5000'))
@@ -41,6 +42,11 @@ ONBOARDING_VERSION = 1
 STATUSES = ('not_started', 'in_progress', 'completed', 'skipped')
 
 _lock = threading.RLock()
+
+
+def _path():
+    """The current user's preferences file (see users.path)."""
+    return users.path(PREFERENCES_FILE)
 
 
 def _now_iso():
@@ -82,7 +88,7 @@ def _coerce(raw):
 
 def _read():
     try:
-        with open(PREFERENCES_FILE, 'r', encoding='utf-8') as fh:
+        with open(_path(), 'r', encoding='utf-8') as fh:
             return _coerce(json.load(fh))
     except FileNotFoundError:
         return None
@@ -93,7 +99,7 @@ def _read():
 
 
 def exists():
-    return os.path.exists(PREFERENCES_FILE)
+    return os.path.exists(_path())
 
 
 def load():
@@ -102,13 +108,14 @@ def load():
 
 
 def _write(data):
-    d = os.path.dirname(PREFERENCES_FILE) or '.'
+    target = _path()
+    d = os.path.dirname(target) or '.'
     os.makedirs(d, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix='.prefs-', suffix='.json', dir=d)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp, PREFERENCES_FILE)
+        os.replace(tmp, target)
     except Exception:
         try:
             os.unlink(tmp)

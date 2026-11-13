@@ -217,6 +217,30 @@ Votes never mark a story read or saved; *Done* (hide) and onboarding *Skip* neve
 Feedback embeddings are cached (`embed_cache.json`), so votes cost no repeat inference; at most
 `FEEDBACK_EMBED_BUDGET=60` new ones are computed per run.
 
+## 4b-2. Interest match (user accounts only)
+
+With `AUTH_MODE=local` the chat model gives every article ONE reader-neutral *newsworthiness*
+score (it can't carry every user's interests in one prompt without re-scoring per user). Each
+user's relevance is then rebuilt from embeddings:
+
+```
+interest_match = calibrate(max cosine(article, each of YOUR category interests),
+                           INTEREST_SIM_LO=0.45, INTEREST_SIM_HI=0.75)
+score          = (1 − w) × base_score + w × 10 × interest_match       # w = Interest match weight, 0.5
+```
+
+`base_score` (the shared LLM score) and `interest_match` are kept on each digest article, so the
+score chip shows where a ranking came from. The article lands in one of *your* categories: the
+model's pick if you have it, else the category you filed the feed under, else your closest interest.
+
+- Off-topic stories still ranking high → raise *Interest match weight*.
+- Only ever the same narrow topics → lower it, or broaden your category interest descriptions.
+- Matches look uniformly high/low → your embedding model's similarities sit elsewhere; move
+  `INTEREST_SIM_LO` / `INTEREST_SIM_HI` (env).
+
+Per-user settings (with accounts): everything under Personalize, Retention and Blocklist plus
+*Personalization strength*. Models, clustering, ingestion and schedule are global (admins).
+
 ## 4c. CPU budget
 
 - **New articles scored / run** (`max_new_scored`, default 40): only never-seen articles go to the chat

@@ -694,6 +694,11 @@
 
     /* ── Header refresh ─────────────────────────────────── */
     .hdr-btn.refresh[disabled] { opacity: .5; cursor: progress; }
+    #account-btn { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    @media (max-width: 640px) {
+      .header { flex-wrap: wrap; gap: 10px; }
+      .header-right { flex-wrap: wrap; gap: 8px; }
+    }
     .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 9px 16px; border-radius: 999px; font-size: 13px; z-index: 50; box-shadow: var(--shadow); max-width: calc(100vw - 32px); }
 
     /* ── Compact (phone / Home Assistant) view ─────────── */
@@ -805,6 +810,7 @@
       <span class="sync-status" id="sync-status" data-state="idle" style="display:none;"></span>
       <button class="hdr-btn refresh" id="refresh-btn" onclick="refreshFeeds(this)" title="Fetch new stories from your feeds" aria-label="Refresh feeds">↻ Refresh</button>
       <button class="hdr-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark" aria-label="Toggle light or dark theme">◐</button>
+      <button class="hdr-btn" id="account-btn" style="display:none;" onclick="openAccount()" title="Your account" aria-label="Your account"></button>
     </div>
   </header>
 
@@ -2794,12 +2800,24 @@ const SETTINGS_TABS = [
 ];
 let settingsTab = 'feeds';
 
+// Tabs this user may see: Models and Runs are admin-only (global); Account
+// and Users appear when accounts are enabled.
+function visibleSettingsTabs() {
+  const tabs = SETTINGS_TABS.filter(t => isAdmin() || !['models', 'runs'].includes(t.id));
+  if (multiUser()) {
+    if (isAdmin()) tabs.splice(tabs.length - 1, 0, { id: 'users', label: 'Users' });
+    tabs.splice(tabs.length - 1, 0, { id: 'account', label: 'Account' });
+  }
+  return tabs;
+}
+
 function renderSettings() {
   const el = document.getElementById('settings-content');
   if (!el) return;
+  if (!visibleSettingsTabs().some(t => t.id === settingsTab)) settingsTab = 'feeds';
   el.innerHTML = `
     <nav class="subtabs" aria-label="Settings sections">
-      ${SETTINGS_TABS.map(t =>
+      ${visibleSettingsTabs().map(t =>
         `<button class="subtab${t.id === settingsTab ? ' active' : ''}" onclick="switchSettingsTab('${t.id}')">${t.label}</button>`
       ).join('')}
     </nav>
@@ -2821,6 +2839,8 @@ function renderSettingsPane() {
   if (settingsTab === 'display') { renderDisplayPane(pane); return; }
   if (settingsTab === 'runs')  { renderRunsPane(pane); return; }
   if (settingsTab === 'personalize') { renderPersonalizePane(pane); return; }
+  if (settingsTab === 'account') { renderAccountPane(pane); return; }
+  if (settingsTab === 'users') { renderUsersPane(pane); return; }
 
   // Every other tab needs /settings (and Models also needs /models).
   if (!appSettings || !appSettingsSchema || (settingsTab === 'models' && !availableModels)) {
@@ -3189,7 +3209,7 @@ async function fetchModels() {
 async function ensureSettingsData() {
   const tasks = [];
   if (!appSettings) tasks.push(fetchSettings().catch(() => {}));
-  if (!availableModels) tasks.push(fetchModels());
+  if (!availableModels && isAdmin()) tasks.push(fetchModels());
   await Promise.all(tasks);
 }
 
@@ -3239,8 +3259,9 @@ function numberField(key, spec, value) {
 }
 
 function renderNumericGroup(group, title) {
+  // Global (admin-only) knobs are hidden from regular users.
   const entries = Object.entries(appSettingsSchema)
-    .filter(([, s]) => s.group === group && s.type !== 'list');
+    .filter(([, s]) => s.group === group && s.type !== 'list' && s.editable !== false);
   if (!entries.length) return '';
   return `<div class="settings-section">
     <div class="settings-h">${title}</div>
@@ -4376,7 +4397,201 @@ async function pollStatus() {
 }
 
 /* ── Load digest.json + state in parallel ────────────── */
+/* ── Accounts ─────────────────────────────────────────── */
+// `ME` comes from /auth/me. With AUTH_MODE=none it is {mode:'none'} and the
+// app behaves exactly as the single-user version (everyone is the admin).
+let ME = { mode: 'none', user: null };
+const multiUser = () => ME.mode && ME.mode !== 'none';
+const isAdmin = () => !multiUser() || !!(ME.user && ME.user.role === 'admin');
+
+// Any API call that comes back 401 means the session ended: go sign in.
+const _rawFetch = window.fetch.bind(window);
+window.fetch = async function(input, init) {
+  const res = await _rawFetch(input, init);
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  if (res.status === 401 && !url.includes('/auth/')) location.href = '/login';
+  return res;
+};
+
+async function loadMe() {
+  try { ME = await (await _rawFetch('/auth/me', { cache: 'no-store' })).json(); }
+  catch (e) { return; }   // offline: keep going on the local cache
+  if (multiUser() && !ME.user) { location.href = '/login'; throw new Error('Login required'); }
+  // A different account on this browser: never show the previous one's cache.
+  try {
+    const uid = ME.user ? ME.user.id : 'owner';
+    const prev = localStorage.getItem('cw_uid');
+    if (prev && prev !== uid) {
+      [READ_KEY, LATER_KEY, HISTORY_KEY, VIEW_STATE_KEY, STATE_UPDATED_KEY, SOURCE_STATS_KEY, LEARNING_KEY]
+        .forEach(k => localStorage.removeItem(k));
+    }
+    localStorage.setItem('cw_uid', uid);
+  } catch (e) {}
+  const btn = document.getElementById('account-btn');
+  if (btn && multiUser() && ME.user) {
+    btn.textContent = ME.user.display_name || ME.user.username;
+    btn.style.display = '';
+  }
+}
+
+window.openAccount = function() {
+  settingsTab = 'account';
+  switchView('settings');
+};
+
+window.logout = async function() {
+  try { await fetch('/auth/logout', { method: 'POST' }); } catch (e) {}
+  location.href = '/login';
+};
+
+function renderAccountPane(pane) {
+  const u = ME.user || {};
+  pane.innerHTML = `
+    <div class="settings-section">
+      <div class="settings-h">Account</div>
+      <div class="settings-help">Signed in as <strong>${escapeHtml(u.display_name || u.username)}</strong>
+        (${escapeHtml(u.username)}, ${u.role === 'admin' ? 'administrator' : 'user'}).
+        Your feeds, categories, likes, reading history and personal ranking settings are private to this account.</div>
+      <div class="cfg-actions"><button class="feed-btn" onclick="logout()">Sign out</button></div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-h">Change password</div>
+      <div class="cfg-grid">
+        <div class="cfg-row"><label class="cfg-label" for="pw-current">Current password</label>
+          <input class="feed-input" id="pw-current" type="password" autocomplete="current-password"></div>
+        <div class="cfg-row"><label class="cfg-label" for="pw-new">New password <span class="cfg-help">At least 8 characters.</span></label>
+          <input class="feed-input" id="pw-new" type="password" autocomplete="new-password"></div>
+      </div>
+      <div class="cfg-actions">
+        <button class="feed-btn primary" onclick="changePassword()">Change password</button>
+        <span class="cfg-status" id="cfg-status-password"></span>
+      </div>
+    </div>`;
+}
+
+window.changePassword = async function() {
+  const current = document.getElementById('pw-current').value;
+  const next = document.getElementById('pw-new').value;
+  setCfgStatus('password', 'muted', 'Saving…');
+  try {
+    const r = await fetch('/auth/password', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({ current, new: next }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    document.getElementById('pw-current').value = '';
+    document.getElementById('pw-new').value = '';
+    setCfgStatus('password', 'ok', 'Password changed. Other devices were signed out.');
+  } catch (e) { setCfgStatus('password', 'err', e.message || String(e)); }
+};
+
+let usersList = null;
+
+async function renderUsersPane(pane) {
+  if (!usersList) {
+    pane.innerHTML = '<p class="empty" style="padding:16px 0;">Loading users…</p>';
+    try {
+      const r = await fetch('/users', { cache: 'no-store' });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      usersList = d.users;
+    } catch (e) {
+      pane.innerHTML = `<p class="empty" style="padding:16px 0;">${escapeHtml(e.message || String(e))}</p>`;
+      return;
+    }
+    if (settingsTab !== 'users') return;
+  }
+  const me = ME.user ? ME.user.id : null;
+  const rows = usersList.map(u => {
+    const self = u.id === me;
+    return `<tr>
+      <td class="feed-cell-name">${escapeHtml(u.display_name || u.username)}
+        <div style="font-size:12px;color:var(--text3)">${escapeHtml(u.username)}${u.legacy ? ' · owner' : ''}${self ? ' · you' : ''}</div></td>
+      <td><select class="feed-select" ${self ? 'disabled' : ''} onchange="updateUser('${u.id}', { role: this.value })">
+        <option value="user"${u.role === 'user' ? ' selected' : ''}>User</option>
+        <option value="admin"${u.role === 'admin' ? ' selected' : ''}>Admin</option></select></td>
+      <td style="color:var(--text2);font-size:12px">${u.disabled ? 'Disabled' : (u.last_login_at ? 'Last sign-in ' + escapeHtml(u.last_login_at.slice(0, 10)) : 'Never signed in')}</td>
+      <td style="white-space:nowrap;text-align:right">
+        <button class="feed-btn" onclick="resetUserPassword('${u.id}', '${escapeAttr(u.username)}')">Reset password</button>
+        ${self ? '' : `<button class="feed-btn" onclick="updateUser('${u.id}', { disabled: ${!u.disabled} })">${u.disabled ? 'Enable' : 'Disable'}</button>`}
+        ${self || u.legacy ? '' : `<button class="feed-btn" onclick="deleteUser('${u.id}', '${escapeAttr(u.username)}')">Delete</button>`}
+      </td></tr>`;
+  }).join('');
+  pane.innerHTML = `
+    <div class="settings-section">
+      <div class="settings-h">Users <span class="settings-h-count">${usersList.length}</span></div>
+      <div class="settings-help">Each user has private feeds, categories, likes and reading history, and their own ranked digest.
+        Articles are fetched and scored by the model once, however many users follow them. Admins can also change the global settings (models, schedule, ingestion).</div>
+      <div style="overflow-x:auto"><table class="stats-table"><tbody>${rows}</tbody></table></div>
+      <div class="cfg-status" id="cfg-status-users" style="margin-top:8px"></div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-h">Add user</div>
+      <div class="cfg-grid">
+        <div class="cfg-row"><label class="cfg-label" for="nu-username">Username <span class="cfg-help">Letters, digits, . _ @ -</span></label>
+          <input class="feed-input" id="nu-username" autocomplete="off" autocapitalize="none" spellcheck="false"></div>
+        <div class="cfg-row"><label class="cfg-label" for="nu-name">Display name <span class="cfg-help">Optional.</span></label>
+          <input class="feed-input" id="nu-name" autocomplete="off"></div>
+        <div class="cfg-row"><label class="cfg-label" for="nu-password">Initial password <span class="cfg-help">At least 8 characters. They can change it under Settings → Account.</span></label>
+          <input class="feed-input" id="nu-password" type="password" autocomplete="new-password"></div>
+        <div class="cfg-row"><label class="cfg-label" for="nu-role">Role <span class="cfg-help">Admins manage users and global settings.</span></label>
+          <select class="feed-select" id="nu-role"><option value="user">User</option><option value="admin">Admin</option></select></div>
+      </div>
+      <div class="cfg-actions">
+        <button class="feed-btn primary" onclick="createUser()">Add user</button>
+        <span class="cfg-status" id="cfg-status-newuser"></span>
+      </div>
+    </div>`;
+}
+
+async function usersCall(method, url, body) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' },
+                               body: body ? JSON.stringify(body) : undefined });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+  usersList = null;
+  return d;
+}
+
+function rerenderUsers(scope, kind, msg) {
+  const pane = document.getElementById('settings-pane');
+  if (pane && settingsTab === 'users') {
+    renderUsersPane(pane).then(() => { if (msg) setCfgStatus(scope, kind, msg); });
+  }
+}
+
+window.createUser = async function() {
+  const body = {
+    username: document.getElementById('nu-username').value.trim(),
+    display_name: document.getElementById('nu-name').value.trim(),
+    password: document.getElementById('nu-password').value,
+    role: document.getElementById('nu-role').value,
+  };
+  setCfgStatus('newuser', 'muted', 'Creating…');
+  try {
+    const u = await usersCall('POST', '/users', body);
+    rerenderUsers('users', 'ok', `Created ${u.username}. They'll set up feeds on first sign-in.`);
+  } catch (e) { setCfgStatus('newuser', 'err', e.message || String(e)); }
+};
+
+window.updateUser = async function(id, patch) {
+  try { await usersCall('PUT', '/users?id=' + encodeURIComponent(id), patch); rerenderUsers('users', 'ok', 'Saved.'); }
+  catch (e) { usersList = null; rerenderUsers('users', 'err', e.message || String(e)); }
+};
+
+window.resetUserPassword = async function(id, username) {
+  const pw = prompt(`New password for ${username} (at least 8 characters). Their other sessions will be signed out.`);
+  if (!pw) return;
+  await updateUser(id, { password: pw });
+};
+
+window.deleteUser = async function(id, username) {
+  if (!confirm(`Delete ${username} and all of their feeds, likes and history? This cannot be undone.`)) return;
+  try { await usersCall('DELETE', '/users?id=' + encodeURIComponent(id)); rerenderUsers('users', 'ok', `Deleted ${username}.`); }
+  catch (e) { setCfgStatus('users', 'err', e.message || String(e)); }
+};
+
 async function loadDigest() {
+  try { await loadMe(); } catch (e) { return; }
   const statusEl = document.getElementById('status-screen');
   const pageEl   = document.querySelector('.page');
   const markDone = (id) => document.getElementById(id)?.classList.add('done');

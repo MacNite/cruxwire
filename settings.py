@@ -16,6 +16,8 @@ import re
 import tempfile
 import threading
 
+import users
+
 SETTINGS_FILE = os.environ.get('SETTINGS_FILE', '/data/settings.json')
 CATEGORIES_FILE = os.environ.get('CATEGORIES_FILE', '/data/categories.json')
 
@@ -86,7 +88,7 @@ def load_categories():
     de-duplicated. Falls back to DEFAULT_CATEGORIES so a missing or malformed
     file can never break a run. Order = scoring priority."""
     try:
-        with open(CATEGORIES_FILE, 'r', encoding='utf-8') as fh:
+        with open(users.path(CATEGORIES_FILE), 'r', encoding='utf-8') as fh:
             raw = json.load(fh)
     except Exception:
         raw = None
@@ -101,7 +103,7 @@ def save_categories(items):
     if not cats:
         raise ValueError('At least one valid category is required.')
     with _lock:
-        _atomic_write(CATEGORIES_FILE, cats)
+        _atomic_write(users.path(CATEGORIES_FILE), cats)
     return cats
 
 
@@ -184,6 +186,10 @@ def _schema():
             'min': 0.0, 'max': 0.5, 'step': 0.05,
             'group': 'personalization', 'label': 'Exploration share',
             'help': 'Fraction of feed slots reserved for stories outside your liked topics, so the feed keeps discovering. 0.25 = about one in four.'},
+        'interest_weight': {
+            'type': 'float', 'default': _env_float('INTEREST_WEIGHT', 0.5), 'min': 0.0, 'max': 1.0, 'step': 0.05,
+            'group': 'personalization', 'label': 'Interest match weight',
+            'help': 'With user accounts on: how much your category interests (vs. the shared newsworthiness score) decide relevance. 0 = only newsworthiness, 1 = only your interests.'},
         'onboarding_min_likes': {
             'type': 'int', 'default': _env_int('ONBOARDING_MIN_LIKES', 10),
             'min': 1, 'max': 50,
@@ -334,18 +340,41 @@ def _coerce(spec, value):
     return spec['default']
 
 
+# Per-user settings. With accounts enabled (users.AUTH_MODE != 'none') these
+# keys are personal: each user's overrides live in their own user_settings.json
+# and fall back to the global settings.json (the admin's values act as the
+# defaults for everyone). Every other key (models, clustering, ingestion,
+# schedule) is global and admin-only. In single-user mode it is all one file.
+USER_GROUPS = ('personalization', 'retention', 'blocklist')
+USER_EXTRA_KEYS = ('taste_weight',)
+USER_SETTINGS_NAME = 'user_settings.json'
+
+
+def is_user_key(key, spec=None):
+    spec = spec or _schema().get(key) or {}
+    return key in USER_EXTRA_KEYS or spec.get('group') in USER_GROUPS
+
+
+def _user_settings_file():
+    return users.path(os.path.join(os.path.dirname(SETTINGS_FILE) or '.', USER_SETTINGS_NAME))
+
+
 def defaults():
     return {k: s['default'] for k, s in _schema().items()}
 
 
 def schema():
-    """Schema for the client (labels, bounds, defaults, groups)."""
-    return _schema()
+    """Schema for the client (labels, bounds, defaults, groups), each key
+    tagged with its scope ('user' or 'global')."""
+    out = _schema()
+    for k, s in out.items():
+        s['scope'] = 'user' if is_user_key(k, s) else 'global'
+    return out
 
 
-def _read_file():
+def _read_file(path=None):
     try:
-        with open(SETTINGS_FILE, 'r', encoding='utf-8') as fh:
+        with open(path or SETTINGS_FILE, 'r', encoding='utf-8') as fh:
             data = json.load(fh)
         return data if isinstance(data, dict) else {}
     except FileNotFoundError:
@@ -359,6 +388,9 @@ def load():
     """Effective settings: env defaults overlaid with validated file overrides."""
     sch = _schema()
     raw = _read_file()
+    if users.enabled():
+        personal = _read_file(_user_settings_file())
+        raw.update({k: v for k, v in personal.items() if is_user_key(k, sch.get(k))})
     out = {}
     for key, spec in sch.items():
         out[key] = _coerce(spec, raw[key]) if key in raw else spec['default']
@@ -381,22 +413,33 @@ def _atomic_write(path, obj):
         raise
 
 
-def save(patch):
+def save(patch, allow_global=True):
     """Validate a partial update, merge over current overrides, write atomically.
 
-    Unknown keys are ignored; out-of-range values are clamped. Returns the new
-    effective settings.
+    Unknown keys are ignored; out-of-range values are clamped. With accounts
+    enabled, personal keys go to the current user's file and global keys to
+    settings.json — only if `allow_global` (the caller is an admin); otherwise
+    they are ignored. Returns the new effective settings.
     """
     sch = _schema()
+    patch = patch if isinstance(patch, dict) else {}
+    multi = users.enabled()
     with _lock:
         current = _read_file()
-        if isinstance(patch, dict):
-            for key, spec in sch.items():
-                if key in patch:
-                    current[key] = _coerce(spec, patch[key])
-        # Drop anything no longer in the schema so the file stays clean.
-        current = {k: v for k, v in current.items() if k in sch}
-        _atomic_write(SETTINGS_FILE, current)
+        personal = _read_file(_user_settings_file()) if multi else {}
+        for key, spec in sch.items():
+            if key not in patch:
+                continue
+            if multi and is_user_key(key, spec):
+                personal[key] = _coerce(spec, patch[key])
+            elif allow_global:
+                current[key] = _coerce(spec, patch[key])
+        # Drop anything no longer in the schema so the files stay clean.
+        if allow_global or not multi:
+            _atomic_write(SETTINGS_FILE, {k: v for k, v in current.items() if k in sch})
+        if multi:
+            _atomic_write(_user_settings_file(),
+                          {k: v for k, v in personal.items() if is_user_key(k, sch.get(k))})
     return load()
 
 

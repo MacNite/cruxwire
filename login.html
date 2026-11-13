@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in · Cruxwire</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <style>
+    :root {
+      color-scheme: light;
+      --brand: #e8482b; --bg: #f7f5f0; --surface: #ffffff; --border: #e6e1d8; --border2: #d8d2c6;
+      --text: #15120d; --text2: #5d5a52; --text3: #908c83; --err: #c0392b;
+      --font: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    }
+    :root.dark {
+      color-scheme: dark;
+      --bg: #0b0c0e; --surface: #15171b; --border: rgba(255,255,255,0.08); --border2: rgba(255,255,255,0.16);
+      --text: #f2f0ec; --text2: #aaa79f; --text3: #74716a; --err: #ff7b6b;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px 16px;
+           background: var(--bg); color: var(--text); font-family: var(--font); }
+    .card { width: 100%; max-width: 360px; background: var(--surface); border: 1px solid var(--border);
+            border-radius: 12px; padding: 28px 24px; box-shadow: 0 8px 24px rgba(20,16,10,.06); }
+    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+    .brand img { width: 32px; height: 32px; }
+    .brand span { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+    h1 { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+    .sub { font-size: 13px; color: var(--text2); margin-bottom: 18px; line-height: 1.45; }
+    label { display: block; font-size: 12px; font-weight: 600; color: var(--text2); margin: 12px 0 6px; }
+    input { width: 100%; font: inherit; font-size: 15px; padding: 10px 12px; border-radius: 8px;
+            border: 1px solid var(--border2); background: var(--bg); color: var(--text); }
+    input:focus { outline: 2px solid var(--brand); outline-offset: 1px; border-color: transparent; }
+    button { width: 100%; margin-top: 20px; padding: 11px; font: inherit; font-weight: 600; font-size: 15px;
+             border: 0; border-radius: 8px; background: var(--brand); color: #fff; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: default; }
+    .msg { min-height: 18px; margin-top: 12px; font-size: 13px; color: var(--err); }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><img src="/logo-mark.png" alt=""><span>Cruxwire</span></div>
+    <h1 id="title">Sign in</h1>
+    <p class="sub" id="sub">Sign in to see your digest.</p>
+    <form id="form" autocomplete="on">
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <div id="confirm-wrap" hidden>
+        <label for="confirm">Confirm password</label>
+        <input id="confirm" type="password" autocomplete="new-password">
+      </div>
+      <button id="submit" type="submit">Sign in</button>
+      <div class="msg" id="msg" role="alert"></div>
+    </form>
+  </main>
+<script>
+(function () {
+  try { if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark'); } catch (e) {}
+  const $ = (id) => document.getElementById(id);
+  let setup = false;
+
+  fetch('/auth/me', { cache: 'no-store' }).then(r => r.json()).then(me => {
+    if (me.user) { location.replace('/'); return; }
+    if (me.needsSetup) {
+      setup = true;
+      $('title').textContent = 'Create the admin account';
+      $('sub').textContent = 'First start: this account becomes the administrator and keeps the existing feeds, categories and reading history.';
+      $('password').autocomplete = 'new-password';
+      $('confirm-wrap').hidden = false;
+      $('confirm').required = true;
+      $('submit').textContent = 'Create account';
+    }
+  }).catch(() => {});
+
+  $('form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const username = $('username').value.trim();
+    const password = $('password').value;
+    if (setup && password !== $('confirm').value) { $('msg').textContent = 'Passwords do not match.'; return; }
+    $('submit').disabled = true;
+    $('msg').textContent = '';
+    try {
+      const r = await fetch(setup ? '/auth/setup' : '/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+      location.replace('/');
+    } catch (e) {
+      $('msg').textContent = e.message || String(e);
+      $('submit').disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>
