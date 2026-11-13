@@ -1,6 +1,8 @@
 import http.server
 import threading
+import os
 import unittest
+import urllib.request
 from unittest import mock
 
 import _env  # noqa: F401
@@ -85,6 +87,21 @@ class NetsafeTests(unittest.TestCase):
              mock.patch.object(netsafe, '_proxy_configured', return_value=False):
             with self.assertRaises(netsafe.BlockedURL):
                 netsafe.fetch(f'http://127.0.0.1:{self.port}/ok')
+
+    def test_peer_check_applies_to_no_proxy_bypass(self):
+        # A proxy is configured, but NO_PROXY makes urllib connect directly:
+        # the real peer (loopback) must still be checked.
+        env = {'http_proxy': 'http://proxy.invalid:3128', 'no_proxy': '127.0.0.1'}
+        with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch.object(netsafe, '_resolve', return_value=['93.184.216.34']):
+            with self.assertRaises(netsafe.BlockedURL):
+                netsafe.fetch(f'http://127.0.0.1:{self.port}/ok')
+
+    def test_proxied_request_skips_peer_check(self):
+        req = urllib.request.Request('http://example.com/x')
+        req.set_proxy('127.0.0.1:3128', 'http')
+        self.assertTrue(netsafe._via_proxy(req))
+        self.assertFalse(netsafe._via_proxy(urllib.request.Request('http://example.com/x')))
 
     def test_get_text_never_raises(self):
         self.assertEqual(netsafe.get_text('http://10.0.0.1/feed'), '')

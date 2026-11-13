@@ -137,14 +137,27 @@ class _SafeHTTPSConnection(http.client.HTTPSConnection):
         self._create_connection = _guarded_create_connection
 
 
+def _via_proxy(req):
+    """True when urllib's ProxyHandler routed this request to a proxy (the
+    socket peer is then the configured proxy, which may legitimately be on a
+    private address). A request that bypasses the proxy (NO_PROXY) connects
+    directly and gets the peer check like any other."""
+    if getattr(req, '_tunnel_host', None):
+        return True
+    target = urllib.parse.urlsplit(req.full_url).netloc
+    return bool(req.host) and req.host.lower() != (target or '').lower()
+
+
 class _SafeHTTPHandler(urllib.request.HTTPHandler):
     def http_open(self, req):
-        return self.do_open(_SafeHTTPConnection, req)
+        cls = http.client.HTTPConnection if _via_proxy(req) else _SafeHTTPConnection
+        return self.do_open(cls, req)
 
 
 class _SafeHTTPSHandler(urllib.request.HTTPSHandler):
     def https_open(self, req):
-        return self.do_open(_SafeHTTPSConnection, req, context=self._context)
+        cls = http.client.HTTPSConnection if _via_proxy(req) else _SafeHTTPSConnection
+        return self.do_open(cls, req, context=self._context)
 
 
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -161,15 +174,14 @@ def _proxy_configured(scheme):
 
 
 def _opener(scheme):
-    handlers = [_SafeRedirectHandler()]
-    if _proxy_configured(scheme):
-        # Behind an outbound proxy the socket peer is the proxy itself, so the
-        # peer check can't apply; the pre-connect DNS check (and per-hop
-        # redirect check) still does.
-        handlers.append(urllib.request.ProxyHandler())
-    else:
-        handlers += [urllib.request.ProxyHandler({}), _SafeHTTPHandler(), _SafeHTTPSHandler()]
-    return urllib.request.build_opener(*handlers)
+    # The guarded handlers are always installed. Requests that actually go to a
+    # configured proxy skip the peer check (the peer is the proxy; the
+    # pre-connect DNS check and per-hop redirect check still apply), but any
+    # direct connection - no proxy, a NO_PROXY bypass, or a redirect to a
+    # scheme without a proxy - verifies the real connected peer.
+    proxies = urllib.request.ProxyHandler(urllib.request.getproxies() if _proxy_configured(scheme) else {})
+    return urllib.request.build_opener(_SafeRedirectHandler(), proxies,
+                                       _SafeHTTPHandler(), _SafeHTTPSHandler())
 
 
 class Response:
