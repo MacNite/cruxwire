@@ -11,6 +11,13 @@ preferences.json
 image_cache.json
 embed_cache.json
 onboarding_pool.json
+users.json
+users.json.bak
+.accounts-initialized
+sessions.json
+user_settings.json
+users/
+corpus/
 *.log
 
 # Local environment / secrets - never commit
