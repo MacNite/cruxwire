@@ -130,7 +130,7 @@ def _schema():
     return {
         # ── Models (which Ollama models to use; host/port stay in compose) ─
         'ollama_model': {
-            'type': 'str', 'default': os.environ.get('OLLAMA_MODEL', 'qwen3:8b'),
+            'type': 'str', 'default': os.environ.get('OLLAMA_MODEL', 'qwen3.5:4b'),
             'group': 'models', 'label': 'Chat model',
             'help': 'Ollama model used to score, summarise, and categorise articles.'},
         'embed_model': {
@@ -157,7 +157,43 @@ def _schema():
             'type': 'float', 'default': _env_float('TASTE_WEIGHT', 1.0),
             'min': 0.0, 'max': 3.0, 'step': 0.1,
             'group': 'cluster', 'label': 'Personalization strength',
-            'help': 'How much your taste (embeddings of what you save and open) boosts a story\'s rank. Max points it can add to a perfectly on-taste article. 0 disables personalization.'},
+            'help': 'How much your implicit taste (embeddings of what you save and open) boosts a story\'s rank. Max points it can add to a perfectly on-taste article. 0 disables it. Explicit likes/dislikes are tuned under Personalization.'},
+        # ── Personalization (explicit likes / dislikes) ───────────────
+        'feedback_like_weight': {
+            'type': 'float', 'default': _env_float('FEEDBACK_LIKE_WEIGHT', 1.5),
+            'min': 0.0, 'max': 5.0, 'step': 0.1,
+            'group': 'personalization', 'label': 'Like weight',
+            'help': 'Points added to a story that is as close as possible to stories you liked (similarity to your nearest liked examples, calibrated 0-1). Provisional default — tune after a few days of votes.'},
+        'feedback_dislike_weight': {
+            'type': 'float', 'default': _env_float('FEEDBACK_DISLIKE_WEIGHT', 1.0),
+            'min': 0.0, 'max': 5.0, 'step': 0.1,
+            'group': 'personalization', 'label': 'Dislike weight',
+            'help': 'Points removed from a story that is as close as possible to stories you disliked. Dismissing (Done) is NOT a dislike.'},
+        'feedback_cap': {
+            'type': 'float', 'default': _env_float('FEEDBACK_CAP', 2.0),
+            'min': 0.0, 'max': 5.0, 'step': 0.1,
+            'group': 'personalization', 'label': 'Like/dislike cap',
+            'help': 'Maximum total boost or penalty from likes/dislikes, so base relevance, freshness and coverage still count.'},
+        'source_affinity_weight': {
+            'type': 'float', 'default': _env_float('SOURCE_AFFINITY_WEIGHT', 0.5),
+            'min': 0.0, 'max': 2.0, 'step': 0.1,
+            'group': 'personalization', 'label': 'Publisher affinity',
+            'help': 'Separate, smaller nudge for publishers whose stories you like/dislike overall (smoothed; capped at ±0.5). Liking one story barely moves its publisher.'},
+        'exploration_share': {
+            'type': 'float', 'default': _env_float('EXPLORATION_SHARE', 0.25),
+            'min': 0.0, 'max': 0.5, 'step': 0.05,
+            'group': 'personalization', 'label': 'Exploration share',
+            'help': 'Fraction of feed slots reserved for stories outside your liked topics, so the feed keeps discovering. 0.25 = about one in four.'},
+        'onboarding_min_likes': {
+            'type': 'int', 'default': _env_int('ONBOARDING_MIN_LIKES', 10),
+            'min': 1, 'max': 50,
+            'group': 'personalization', 'label': 'Onboarding likes required',
+            'help': 'Unique likes needed to finish the first-run training wizard.'},
+        'onboarding_recommended_dislikes': {
+            'type': 'int', 'default': _env_int('ONBOARDING_RECOMMENDED_DISLIKES', 3),
+            'min': 0, 'max': 20,
+            'group': 'personalization', 'label': 'Recommended dislikes',
+            'help': 'Dislikes the wizard encourages (not required).'},
         # ── Ingestion ─────────────────────────────────────────────────
         'lookback_hours': {
             'type': 'int', 'default': _env_int('LOOKBACK_HOURS', 36),
@@ -169,11 +205,16 @@ def _schema():
             'min': 16, 'max': 5000,
             'group': 'ingestion', 'label': 'Max articles / run',
             'help': 'Cap on the number of articles scored per run.'},
+        'max_new_scored': {
+            'type': 'int', 'default': _env_int('MAX_NEW_SCORED', 40),
+            'min': 1, 'max': 1000,
+            'group': 'ingestion', 'label': 'New articles scored / run',
+            'help': 'CPU budget: at most this many never-seen articles go to the chat model per run (balanced across feeds). Already-scored articles are reused for free; the rest wait for the next run. Benchmark with `python pipeline.py --benchmark` and adjust.'},
         'score_concurrency': {
-            'type': 'int', 'default': _env_int('SCORE_CONCURRENCY', 4),
+            'type': 'int', 'default': _env_int('SCORE_CONCURRENCY', 1),
             'min': 1, 'max': 32,
             'group': 'ingestion', 'label': 'Scoring workers',
-            'help': 'Parallel Ollama scoring requests. Raise to speed up; lower if Ollama serialises.'},
+            'help': 'Parallel article workers (page fetch + score). Model calls are additionally capped by OLLAMA_MAX_PARALLEL (default 1), so on CPU-only hosts keep this at 1-2.'},
         # ── Schedule ──────────────────────────────────────────────────
         'active_start_hour': {
             'type': 'int', 'default': _env_int('ACTIVE_START_HOUR', 6),
@@ -186,10 +227,15 @@ def _schema():
             'group': 'schedule', 'label': 'Active end hour',
             'help': 'Latest hour (local time) a scheduled run fires.'},
         'interval_hours': {
-            'type': 'int', 'default': _env_int('INTERVAL_HOURS', 2),
+            'type': 'int', 'default': _env_int('INTERVAL_HOURS', 6),
             'min': 1, 'max': 24,
             'group': 'schedule', 'label': 'Interval (hours)',
             'help': 'Hours between runs inside the active window.'},
+        'run_minute': {
+            'type': 'int', 'default': _env_int('RUN_MINUTE', 30),
+            'min': 0, 'max': 59,
+            'group': 'schedule', 'label': 'Run at minute',
+            'help': 'Minute past the hour scheduled runs fire. With start 6, interval 6 and minute 30 the morning briefing is ready around 06:30 (then 12:30, 18:30).'},
         # ── Retention (History only — Read Later is curated, never aged) ──
         'history_retention_days': {
             'type': 'int', 'default': _env_int('HISTORY_RETENTION_DAYS', 3),
