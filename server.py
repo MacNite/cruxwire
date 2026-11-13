@@ -48,6 +48,7 @@ authenticated reverse proxy; with accounts, still terminate TLS in a proxy.
 """
 import concurrent.futures
 import json
+import math
 import os
 import re
 import tempfile
@@ -60,6 +61,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+import ids
 import images
 import onboarding
 import pipeline
@@ -81,6 +83,12 @@ CORS_ALLOW_ORIGIN = os.environ.get('CORS_ALLOW_ORIGIN', '').strip()
 # allow only Home Assistant to embed the app. Unset = framing allowed.
 FRAME_ANCESTORS = os.environ.get('FRAME_ANCESTORS', '').strip()
 MAX_BODY_BYTES = int(os.environ.get('MAX_BODY_BYTES', str(4 * 1024 * 1024)))   # /state etc.
+# Slow-client protection: a socket that sends nothing for REQUEST_TIMEOUT_S
+# seconds (headers or body) is dropped, and at most MAX_CONNECTIONS requests are
+# served at once (further connections wait in the listen backlog).
+REQUEST_TIMEOUT_S = float(os.environ.get('REQUEST_TIMEOUT_S', '30'))
+MAX_CONNECTIONS = max(1, int(os.environ.get('MAX_CONNECTIONS', '64')))
+BIND_ADDR = os.environ.get('BIND_ADDR', '0.0.0.0').strip() or '0.0.0.0'
 SMALL_BODY_BYTES = 64 * 1024                                                   # votes, onboarding
 
 # History retention is a runtime-editable setting now (see settings.py); the env
@@ -154,11 +162,24 @@ def load_state():
             data = json.load(fh)
             if not isinstance(data, dict):
                 return DEFAULT_STATE.copy()
-            return {**DEFAULT_STATE, **data}
+            return _migrate_state_ids({**DEFAULT_STATE, **data})
     except FileNotFoundError:
         return DEFAULT_STATE.copy()
     except Exception:
         return DEFAULT_STATE.copy()
+
+
+def _migrate_state_ids(state):
+    """Read Later / History entries saved under the old 32-bit article ids get
+    the current id (they carry their URL). readIds can't be re-keyed (no URL),
+    so they are matched by legacy id instead - see ids.is_read."""
+    for key in ('later', 'history'):
+        items = state.get(key)
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict) and isinstance(item.get('id'), str):
+                    item['id'] = ids.migrate_id(item['id'], item.get('url'))
+    return state
 
 
 def save_state(state):
@@ -208,7 +229,7 @@ def prune(state):
     later = []
     seen_later = set()
     for item in (state.get('later') or []):
-        if not isinstance(item, dict) or not item.get('id'):
+        if not isinstance(item, dict) or not isinstance(item.get('id'), str) or not item['id']:
             continue
         if item['id'] in seen_later:
             continue
@@ -219,7 +240,7 @@ def prune(state):
     history_cutoff = datetime.now().astimezone().date() - timedelta(days=history_retention_days - 1)
     history = []
     for item in (state.get('history') or []):
-        if not isinstance(item, dict) or not item.get('id'):
+        if not isinstance(item, dict) or not isinstance(item.get('id'), str) or not item['id']:
             continue
         ts = _parse_iso(item.get('viewedAt'))
         if ts is None or ts.astimezone().date() >= history_cutoff:
@@ -255,10 +276,12 @@ def _normalize_source_stats(raw):
             continue
         coerced = {}
         for key in ('opens', 'saves', 'dismisses'):
-            try:
-                coerced[key] = float(counters.get(key, 0) or 0)
-            except (TypeError, ValueError):
-                coerced[key] = 0.0
+            val = counters.get(key, 0)
+            # bool is an int subclass and strings like "NaN" parse as floats;
+            # accept only real finite numbers so state.json stays valid JSON.
+            if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val):
+                val = 0
+            coerced[key] = float(val)
         out[source] = coerced
     return out
 
@@ -270,17 +293,29 @@ def _normalize_learning(raw):
     return {'lastDecayAt': last if isinstance(last, str) else None}
 
 
+def _list_field(payload, key):
+    val = payload.get(key)
+    if val is None:
+        return []
+    if not isinstance(val, list):
+        raise ValueError(f'{key} must be a list')
+    return val
+
+
 def normalize_payload(payload):
-    """Coerce incoming PUT into the expected shape; ignore unknown fields."""
+    """Coerce incoming PUT into the expected shape; ignore unknown fields.
+    Raises ValueError (-> 400) for fields of the wrong type."""
     vs_default = DEFAULT_STATE['viewState']
     raw_vs = payload.get('viewState') if isinstance(payload.get('viewState'), dict) else {}
-    view_state = {**vs_default, **{k: raw_vs[k] for k in vs_default if k in raw_vs}}
+    view_state = {**vs_default, **{k: raw_vs[k] for k in vs_default
+                                   if k in raw_vs and isinstance(raw_vs[k], type(vs_default[k]))}}
+    updated = payload.get('updatedAt')
 
     return {
-        'updatedAt': payload.get('updatedAt') or None,
-        'readIds': list(payload.get('readIds') or []),
-        'later': list(payload.get('later') or []),
-        'history': list(payload.get('history') or []),
+        'updatedAt': updated if isinstance(updated, str) else None,
+        'readIds': [r for r in _list_field(payload, 'readIds') if isinstance(r, str) and len(r) <= 64],
+        'later': [i for i in _list_field(payload, 'later') if isinstance(i, dict)],
+        'history': [i for i in _list_field(payload, 'history') if isinstance(i, dict)],
         'viewState': view_state,
         'sourceStats': _normalize_source_stats(payload.get('sourceStats')),
         'learning': _normalize_learning(payload.get('learning')),
@@ -531,11 +566,12 @@ def ranked_articles(category='all', offset=0, limit=20):
         state = load_state()
     read = set(r for r in (state.get('readIds') or []) if isinstance(r, str))
     later = {i.get('id') for i in (state.get('later') or []) if isinstance(i, dict)}
-    hidden_clusters = {a.get('cluster_id') for a in arts if a['id'] in read or a['id'] in later}
+    seen = lambda a: ids.is_read(a['id'], a.get('url'), read) or a['id'] in later
+    hidden_clusters = {a.get('cluster_id') for a in arts if seen(a)}
     reps = {}
     for a in arts:
         cid = a.get('cluster_id') or a['id']
-        if a['id'] in read or a['id'] in later or cid in hidden_clusters:
+        if seen(a) or cid in hidden_clusters:
             continue
         if category and category != 'all' and a.get('category') != category:
             continue
@@ -547,7 +583,7 @@ def ranked_articles(category='all', offset=0, limit=20):
             {'id': o['id'], 'title': o.get('title'), 'url': o.get('url'),
              'source': o.get('publisher') or o.get('source')}
             for o in arts if (o.get('cluster_id') or o['id']) == cid and o is not rep
-            and o['id'] not in read][:6]
+            and not ids.is_read(o['id'], o.get('url'), read)][:6]
     cfg = settings.load()
     ranked = pipeline.diversify(list(reps.values()), explore_share=cfg['exploration_share'])
     votes = preferences.votes_map()
@@ -580,7 +616,35 @@ class BodyTooLarge(Exception):
     pass
 
 
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a cap on concurrent request threads, so a pile
+    of slow or idle connections can't spawn unbounded threads."""
+    daemon_threads = True
+
+    def __init__(self, *args, max_connections=MAX_CONNECTIONS, **kwargs):
+        self._slots = threading.BoundedSemaphore(max_connections)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        self._slots.acquire()
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
 class StateHandler(BaseHTTPRequestHandler):
+    # Per-socket inactivity timeout (applied by StreamRequestHandler.setup) -
+    # bounds how long a client may stall while sending headers or a body.
+    timeout = REQUEST_TIMEOUT_S
+
     server_version = 'Cruxwire'
     sys_version = ''
 
@@ -829,8 +893,13 @@ class StateHandler(BaseHTTPRequestHandler):
             if payload is None:
                 return True
             try:
+                # first_only: re-checked under the account-store lock, so two
+                # concurrent setup requests can't both create an admin.
                 user = users.create_user(payload.get('username'), payload.get('password'), 'admin',
-                                         payload.get('display_name'))
+                                         payload.get('display_name'), first_only=True)
+            except (users.SetupComplete, users.StoreCorrupt):
+                self._json(409, {'error': 'Setup is already complete.'})
+                return True
             except ValueError as exc:
                 self._json(400, {'error': str(exc)})
                 return True
@@ -931,7 +1000,10 @@ class StateHandler(BaseHTTPRequestHandler):
                 getattr(self, '_' + method.lower())()
         except BodyTooLarge:
             self._json(413, {'error': 'Request body too large'})
-        except BrokenPipeError:
+        except users.StoreCorrupt as exc:
+            print(f'[server] {exc}', flush=True)
+            self._json(503, {'error': 'The account store is damaged; see the server log.'})
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
             pass
 
     def do_GET(self):
@@ -1085,6 +1157,11 @@ class StateHandler(BaseHTTPRequestHandler):
             self.send_error(400, err)
             return
 
+        try:
+            normalize_payload(payload)
+        except ValueError as exc:
+            self._json(400, {'error': str(exc)})
+            return
         with _state_lock:
             state = normalize_payload(payload)
             # Old clients that don't send sourceStats / learning would silently
@@ -1328,6 +1405,10 @@ if __name__ == '__main__':
     seed_categories_if_missing()
     migrate_preferences()
     pipeline.start_background(run_now=True)
-    server = ThreadingHTTPServer(('0.0.0.0', PORT), StateHandler)
-    print(f'Cruxwire server listening on http://0.0.0.0:{PORT}/', flush=True)
+    server = BoundedThreadingHTTPServer((BIND_ADDR, PORT), StateHandler)
+    print(f'Cruxwire server listening on http://{BIND_ADDR}:{PORT}/', flush=True)
+    if not users.enabled() and BIND_ADDR not in ('127.0.0.1', '::1', 'localhost'):
+        print('WARNING: AUTH_MODE=none - there is no login, so anyone who can reach this port '
+              'controls the app. Keep it on a trusted network, or set AUTH_MODE=local / put an '
+              'authenticating reverse proxy in front. See SECURITY.md.', flush=True)
     server.serve_forever()

@@ -19,6 +19,8 @@ the bench's definition.
 """
 import json
 import os
+import re
+import secrets
 import tempfile
 from datetime import datetime, timezone
 
@@ -71,13 +73,14 @@ def _record(article, embedding, now, embed_model, prod_params):
     }
 
 
-def archive_articles(articles, emb_index, embed_model, cfg, log=print):
+def archive_articles(articles, emb_index, embed_model, cfg, log=print, owner=None):
     """Append this run's retained articles to the corpus archive. Best-effort:
     no-op when the flag is off, and never raises (the caller need not guard).
 
     articles: the post-retention `scored` list (what the reader sees).
     emb_index: {article_id: embedding} captured before embeddings are stripped.
     cfg:       the settings dict, for the clustering-param snapshot.
+    owner:     id of the user whose digest this is (goes into the file name).
     """
     if not CAPTURE_ENABLED:
         return
@@ -102,7 +105,11 @@ def archive_articles(articles, emb_index, embed_model, cfg, log=print):
             CORPUS_DIR, 'day=%s' % now.strftime('%Y%m%d'),
             'block=%s' % _block_id(now))
         os.makedirs(part_dir, exist_ok=True)
-        path = os.path.join(part_dir, 'part-%s.jsonl' % now.strftime('%H%M%S'))
+        # Several users' digests are archived within the same second, so the
+        # name carries the user id plus a random suffix - never a collision.
+        uid = re.sub(r'[^a-z0-9]', '', str(owner or '').lower())[:32] or 'run'
+        path = os.path.join(part_dir, 'part-%s-%s-%s.jsonl' % (
+            now.strftime('%H%M%S'), uid, secrets.token_hex(4)))
 
         # Write to a temp file in the same dir, then atomically replace, so the
         # bench never sees a half-written part.

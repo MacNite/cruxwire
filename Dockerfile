@@ -11,14 +11,22 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends tzdata \
     && rm -rf /var/lib/apt/lists/*
 
+# Unprivileged runtime user. The entrypoint starts as root only to hand /data
+# (which older images wrote as root) to this user, then drops privileges.
+RUN groupadd --system --gid 1000 cruxwire \
+    && useradd --system --uid 1000 --gid cruxwire --home-dir /app --shell /usr/sbin/nologin cruxwire \
+    && mkdir -p /data && chown cruxwire:cruxwire /data
+
 WORKDIR /app
 
 # App code + bundled assets. Mutable data lives on the /data volume, not here.
-COPY server.py pipeline.py settings.py corpus_archive.py \
+COPY server.py pipeline.py settings.py corpus_archive.py ids.py \
      preferences.py onboarding.py images.py netsafe.py users.py digest.html login.html \
      favicon.ico favicon-16x16.png favicon-32x32.png apple-touch-icon.png logo-mark.png \
      feeds.sample.json categories.sample.json ./
 COPY static/ ./static/
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
 ENV STATE_FILE=/data/state.json \
     DIGEST_FILE=/data/digest.json \
@@ -40,4 +48,5 @@ VOLUME /data
 EXPOSE 8090
 
 # No build step, no dependencies — pure stdlib.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "server.py"]

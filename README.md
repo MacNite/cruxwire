@@ -3,7 +3,7 @@
 **The crux of the news, none of the noise.**
 A self-hosted, local-AI news reader · **[cruxwire.app](https://cruxwire.app)**
 
-[![CI](https://github.com/philoking/cruxwire/actions/workflows/ci.yml/badge.svg)](https://github.com/philoking/cruxwire/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/MacNite/cruxwire/actions/workflows/ci.yml/badge.svg)](https://github.com/MacNite/cruxwire/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A personal news dashboard in a **single container**. A background pipeline fetches RSS/Atom feeds,
 uses a local LLM (via [Ollama](https://ollama.com)) to score, summarise, and de-duplicate articles,
@@ -232,6 +232,15 @@ Also worth knowing:
   `'self' https://ha.example.lan`) to restrict which sites may embed the app.
 - **Runtime data is stored unencrypted** on the Docker volume (read history, Read Later, learned
   source preferences). Back up - and protect - the volume accordingly.
+- **The container runs unprivileged.** The entrypoint starts as root only to hand `/data` (and the
+  optional corpus directory) to the `cruxwire` user (uid/gid 1000), then drops privileges. Volumes
+  written by older images are re-owned automatically on first start.
+- **Slow clients are bounded.** Each connection gets `REQUEST_TIMEOUT_S` (default 30) seconds of
+  inactivity before it is dropped, and at most `MAX_CONNECTIONS` (default 64) requests are served at
+  once. Outbound fetches also have a total deadline, not just a per-read timeout.
+- **Bind address.** Compose publishes the port on all host interfaces. To keep it on the host only,
+  change the mapping to `"127.0.0.1:${PORT:-8090}:8090"`. Running outside Docker, set `BIND_ADDR`
+  (default `0.0.0.0`). With `AUTH_MODE=none` the server logs a warning at startup as a reminder.
 
 ---
 

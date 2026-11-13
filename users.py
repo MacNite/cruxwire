@@ -217,10 +217,26 @@ def check_password_policy(password):
 # ──────────────────────────────────────────────────────────────────────
 # Accounts
 # ──────────────────────────────────────────────────────────────────────
+class StoreCorrupt(RuntimeError):
+    """users.json exists but cannot be read as an account store. Treated as a
+    hard error (never as "no accounts yet"), so damage can't reopen first-admin
+    setup."""
+
+
 def _load():
-    data = _read_json(USERS_FILE, {})
+    """The account list. A missing file means a fresh install (no accounts);
+    a file that exists but is unreadable or malformed raises StoreCorrupt."""
+    try:
+        with open(USERS_FILE, 'r', encoding='utf-8') as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        raise StoreCorrupt(f'{USERS_FILE} is unreadable ({exc}); fix or restore it from backup') from exc
     users = data.get('users') if isinstance(data, dict) else None
-    return [u for u in (users or []) if isinstance(u, dict) and _UID_RE.match(u.get('id') or '')]
+    if not isinstance(users, list):
+        raise StoreCorrupt(f'{USERS_FILE} has no "users" list; fix or restore it from backup')
+    return [u for u in users if isinstance(u, dict) and _UID_RE.match(u.get('id') or '')]
 
 
 def _save(users):
@@ -275,9 +291,17 @@ def normalize_username(username):
     return username
 
 
-def create_user(username, password, role='user', display_name=None):
+class SetupComplete(Exception):
+    """create_user(first_only=True) found accounts already exist."""
+
+
+def create_user(username, password, role='user', display_name=None, first_only=False):
     """Create an account. The first account ever created becomes the owner of
-    the existing single-user data (and is always an admin)."""
+    the existing single-user data (and is always an admin).
+
+    first_only: only create it if there are no accounts yet (checked under the
+    same lock as the write), else raise SetupComplete. Used by the
+    unauthenticated first-admin setup so concurrent requests can't both win."""
     username = normalize_username(username)
     check_password_policy(password)
     if role not in ROLES:
@@ -285,6 +309,8 @@ def create_user(username, password, role='user', display_name=None):
     pw_hash = hash_password(password)
     with _lock:
         users = _load()
+        if first_only and users:
+            raise SetupComplete()
         if any(u.get('username') == username for u in users):
             raise ValueError('That username is taken.')
         first = not users
@@ -377,7 +403,10 @@ def authenticate(username, password):
     except ValueError:
         _dummy_verify(password or '')
         return None
-    user = by_username(username)
+    try:
+        user = by_username(username)
+    except StoreCorrupt:
+        user = None     # fail closed: nobody logs in against a damaged store
     if user is None or not user.get('password_hash'):
         _dummy_verify(password or '')
         return None
@@ -396,16 +425,31 @@ def bootstrap():
     """On start with auth enabled: create the first admin from ADMIN_USERNAME /
     ADMIN_PASSWORD if there are no accounts yet. Returns a log line or None.
     Without those env vars the UI offers a one-time setup form instead."""
-    if not enabled() or count():
+    if not enabled():
         return None
+    try:
+        if count():
+            return None
+    except StoreCorrupt as exc:
+        return f'WARNING: {exc}. Logins and setup are disabled until it is repaired.'
     if ADMIN_USERNAME and ADMIN_PASSWORD:
-        u = create_user(ADMIN_USERNAME, ADMIN_PASSWORD, 'admin')
+        try:
+            u = create_user(ADMIN_USERNAME, ADMIN_PASSWORD, 'admin', first_only=True)
+        except SetupComplete:
+            return None
         return f'created admin account {u["username"]!r} (owns the existing data)'
     return 'no accounts yet - open the app to create the first admin'
 
 
 def needs_setup():
-    return enabled() and count() == 0
+    """True only for a genuinely fresh install. A damaged account store fails
+    closed (no setup form) rather than looking empty."""
+    if not enabled():
+        return False
+    try:
+        return count() == 0
+    except StoreCorrupt:
+        return False
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -474,7 +518,10 @@ def session_user(token):
         s = sessions.get(key)
         if not isinstance(s, dict) or s.get('expires', 0) <= now:
             return None
-        user = get(s.get('uid'))
+        try:
+            user = get(s.get('uid'))
+        except StoreCorrupt:
+            return None
         if user is None or user.get('disabled'):
             return None
         if now - s.get('seen', 0) > 3600:

@@ -32,6 +32,7 @@ import tempfile
 import threading
 from datetime import datetime, timezone
 
+import ids
 import images
 import users
 
@@ -82,7 +83,9 @@ def _coerce(raw):
             continue
         if e.get('vote') not in (1, -1):
             continue
-        d['feedback'][aid] = e
+        # Votes saved under the old 32-bit ids move to the current id (the
+        # entry keeps its URL), so the vote still shows on the article.
+        d['feedback'][ids.migrate_id(aid, e.get('url'))] = e
     return d
 
 

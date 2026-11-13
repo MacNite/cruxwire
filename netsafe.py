@@ -22,6 +22,7 @@ import http.client
 import ipaddress
 import os
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -194,11 +195,33 @@ class Response:
             return self.body.decode('utf-8', errors='replace')
 
 
-def fetch(url, timeout=DEFAULT_TIMEOUT, limit=DEFAULT_LIMIT, accept='*/*', method='GET'):
+def _read_capped(resp, limit, deadline):
+    """Read up to `limit` bytes in chunks, giving up once `deadline`
+    (time.monotonic()) passes. The socket timeout only bounds each individual
+    read, so without this a server dripping a byte at a time could hold the
+    fetch open indefinitely."""
+    chunks, got = [], 0
+    while got < limit:
+        if time.monotonic() > deadline:
+            raise TimeoutError('total fetch deadline exceeded')
+        chunk = resp.read(min(64 * 1024, limit - got))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        got += len(chunk)
+    return b''.join(chunks)
+
+
+def fetch(url, timeout=DEFAULT_TIMEOUT, limit=DEFAULT_LIMIT, accept='*/*', method='GET',
+          total_timeout=None):
     """Fetch a URL safely. Returns a Response. Raises BlockedURL for policy
     violations and urllib.error.URLError / HTTPError / OSError for network
-    failures (HTTP errors >= 400 raise HTTPError, as with urllib)."""
+    failures (HTTP errors >= 400 raise HTTPError, as with urllib).
+
+    `timeout` bounds connect and each socket read; `total_timeout` (default
+    3x timeout) bounds the whole body download."""
     p = check_url(url)
+    deadline = time.monotonic() + (total_timeout or max(1, timeout or DEFAULT_TIMEOUT) * 3)
     req = urllib.request.Request(url.strip(), method=method, headers={
         'User-Agent': USER_AGENT,
         'Accept': accept,
@@ -207,7 +230,7 @@ def fetch(url, timeout=DEFAULT_TIMEOUT, limit=DEFAULT_LIMIT, accept='*/*', metho
     limit = max(1, int(limit or DEFAULT_LIMIT))
     try:
         with _opener(p.scheme).open(req, timeout=timeout) as resp:
-            body = resp.read(limit + 1) if method != 'HEAD' else b''
+            body = _read_capped(resp, limit + 1, deadline) if method != 'HEAD' else b''
             truncated = len(body) > limit
             return Response(resp.geturl(), getattr(resp, 'status', resp.getcode()),
                             resp.headers, body[:limit], truncated)

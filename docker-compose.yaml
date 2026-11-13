@@ -6,6 +6,11 @@ services:
     build: .
     container_name: cruxwire
     restart: unless-stopped
+    # WARNING: this publishes the port on ALL host interfaces, and with the
+    # default AUTH_MODE=none there is no login - anyone who can reach it
+    # controls the app. Fine on a trusted LAN/tailnet; otherwise set
+    # AUTH_MODE=local, put an authenticating reverse proxy in front, or bind it
+    # to the host only with "127.0.0.1:${PORT:-8090}:8090". See SECURITY.md.
     ports:
       - "${PORT:-8090}:8090"
     environment:

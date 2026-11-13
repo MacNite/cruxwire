@@ -60,7 +60,7 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the maintainers by opening an issue:
-<https://github.com/philoking/cruxwire/issues>. If a report is sensitive and you
+<https://github.com/MacNite/cruxwire/issues>. If a report is sensitive and you
 would prefer it not be public, use GitHub's private vulnerability reporting
 instead (the repository's **Security > Report a vulnerability**), which reaches
 the maintainer privately.

@@ -27,6 +27,8 @@ internet. With `AUTH_MODE=local` it has user accounts (see the README's *User ac
   refused (DNS and connected-peer checks, every redirect re-validated), with timeouts and byte caps.
   Behind an outbound proxy that resolves DNS itself, hostname checks fall back to the proxy. Still,
   don't give the container network access to internal services it has no reason to reach.
+- **Container.** The app runs as an unprivileged `cruxwire` user (uid 1000); the entrypoint uses root
+  only to fix ownership of `/data` before dropping privileges.
 - **Runtime data is stored unencrypted** on the Docker volume (read history, Read Later, learned source
   preferences). Protect and back up the volume accordingly.
 
@@ -42,7 +44,7 @@ maintained release branches; run the latest `main`.
 Please report security issues **privately**, not in a public issue:
 
 - Use GitHub's **Private vulnerability reporting** on this repository: **Security → Report a
-  vulnerability** (<https://github.com/philoking/cruxwire/security/advisories/new>).
+  vulnerability** (<https://github.com/MacNite/cruxwire/security/advisories/new>).
 
 Issues that require an attacker to already be on your trusted network (e.g. "the API has no auth") are
 **known and by design** - see the threat model above. Reports of problems *outside* that model are very
