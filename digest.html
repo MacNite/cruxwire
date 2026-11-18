@@ -210,6 +210,17 @@
     .cattab:hover { color: var(--text); border-color: var(--text3); }
     .cattab.active { background: var(--text); color: var(--bg); border-color: var(--text); }
     .cat-dot { width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; flex-shrink: 0; }
+    .cattab.hidden-topic { opacity: .5; text-decoration: line-through; border-style: dashed; }
+    .catgroup {
+      align-self: center;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text3);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      white-space: nowrap;
+      padding-left: 6px;
+    }
     .cattab .badge {
       display: inline-block;
       color: inherit;
@@ -258,6 +269,9 @@
     /* ── Kicker + meta line ── */
     .kicker { display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap; font-family: var(--font-head); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; }
     .kicker .cdot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .ktag { background: none; border: none; padding: 0; font: inherit; letter-spacing: inherit; text-transform: inherit; color: var(--text3); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    .ktag::before { content: '·'; margin-right: 7px; color: var(--text3); }
+    .ktag:hover { color: var(--text); }
     .meta-row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
     /* Source name truncates to one line; the relative time stays pinned and
        visible so a long outlet name can't wrap and shove the actions around. */
@@ -513,6 +527,9 @@
     .cat-label { flex: 1; min-width: 0; }
     .cat-key { width: 120px; flex-shrink: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
     .cat-interest { width: 100%; }
+    .cat-row-meta { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .cat-group { width: 140px; }
+    .cat-boost { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text2); cursor: pointer; }
     .cat-del { background: none; border: none; color: var(--text3); font-size: 15px; cursor: pointer; padding: 4px 6px; flex-shrink: 0; line-height: 1; -webkit-tap-highlight-color: transparent; }
     .cat-del:hover { color: #e06a5e; }
     .cfg-empty { font-size: 12px; color: var(--text3); font-style: italic; }
@@ -925,7 +942,7 @@ const MID_THRESH        = 5.5;   // (legacy; kept for any external reference)
 // history_retention_days setting once /auth/me has loaded.
 let HISTORY_DAYS        = 3;
 
-const DEFAULT_VIEW_STATE = { currentView: 'digest', currentCat: 'all', digestCat: 'all', showScores: false };
+const DEFAULT_VIEW_STATE = { currentView: 'digest', currentCat: 'all', digestCat: 'all', showScores: false, hiddenCats: [] };
 
 /* ── Category metadata (c = accent color) ─────────────── */
 // Built from GET /categories at load (see buildCats); this is the fallback if
@@ -943,15 +960,39 @@ let CATS = {
   productivity: { label: 'Productivity', c: 'var(--c-productivity)' },
 };
 
-// Rebuild CATS from the server's category config: {all} + one {label, color}
-// per category, in config order (drives nav order + card colors).
+// Rebuild CATS from the server's category config: {all} + one {label, color,
+// group} per category. Nav order: config order, except that categories sharing
+// a group sit together (at the position of the group's first member).
 function buildCats(list) {
   if (!Array.isArray(list) || !list.length) return;
+  const items = list.filter(c => c && c.key);
+  const groupRank = {};
+  items.forEach((c, i) => { const g = c.group || ''; if (g && !(g in groupRank)) groupRank[g] = i; });
+  const ordered = items.map((c, i) => ({ c, i, r: c.group ? groupRank[c.group] : i }))
+    .sort((a, b) => a.r - b.r || a.i - b.i).map(x => x.c);
   const next = { all: { label: 'All' } };
-  for (const c of list) {
-    if (c && c.key) next[c.key] = { label: c.label || c.key, c: safeColor(c.color) };
+  for (const c of ordered) {
+    next[c.key] = { label: c.label || c.key, c: safeColor(c.color), group: c.group || '' };
   }
   CATS = next;
+}
+
+// An article's topic keys, primary first. Older digests / saved items only
+// carry `category`.
+function topicsOf(a) {
+  if (a && Array.isArray(a.topics) && a.topics.length) return a.topics.filter(t => typeof t === 'string');
+  return a && a.category ? [a.category] : [];
+}
+// Does `a` belong in the current chip filter? Matches ANY of its topics, so a
+// story about AI chip export rules shows under AI, Hardware and Politics.
+function catMatch(a) {
+  return currentCat === 'all' || topicsOf(a).includes(currentCat);
+}
+// Topics the reader hid from Home (right-click / long-press a chip). A story
+// carrying any hidden topic is left out of the Home feed and its counts.
+let hiddenCats = new Set();
+function notHidden(a) {
+  return !hiddenCats.size || !topicsOf(a).some(t => hiddenCats.has(t));
 }
 
 /* ── State helpers ────────────────────────────────────── */
@@ -993,6 +1034,8 @@ function normalizeState(raw = {}) {
       currentCat: viewState.currentCat || 'all',
       digestCat: viewState.digestCat || 'all',
       showScores: !!viewState.showScores,
+      hiddenCats: Array.isArray(viewState.hiddenCats)
+        ? viewState.hiddenCats.filter(k => typeof k === 'string').slice(0, 100) : [],
     },
     sourceStats: normalizeSourceStats(raw.sourceStats),
     learning: { lastDecayAt: typeof learning.lastDecayAt === 'string' ? learning.lastDecayAt : null },
@@ -1107,6 +1150,7 @@ function applySharedState(state) {
   }
   currentCat = sharedState.viewState.currentCat;
   digestCat = sharedState.viewState.digestCat;
+  hiddenCats = new Set(sharedState.viewState.hiddenCats || []);
 }
 
 let pendingRemoteSave = false;
@@ -1337,9 +1381,12 @@ function thumb(a) {
 
 // Category kicker (colored dot + label). Rollups are signalled by the "＋N"
 // thumbnail badge and the expander, not a separate pill here.
+// Secondary topics follow as quiet tags; tapping one filters Home to it.
 function kicker(a) {
   const cat = catMeta(a.category);
-  return `<span class="kicker" style="color:${cat.c}"><span class="cdot" style="background:${cat.c}"></span>${escapeHtml(cat.label || a.category)}</span>`;
+  const extra = topicsOf(a).filter(t => t !== a.category && CATS[t]).map(t =>
+    `<button type="button" class="ktag" onclick="event.stopPropagation(); setCategory(${jsArg(t)})" title="Show ${escapeAttr(CATS[t].label)} stories">${escapeHtml(CATS[t].label)}</button>`).join('');
+  return `<span class="kicker" style="color:${cat.c}"><span class="cdot" style="background:${cat.c}"></span>${escapeHtml(cat.label || a.category)}${extra}</span>`;
 }
 
 function articleDate(article) {
@@ -1381,7 +1428,7 @@ function historyItems() {
 function visible(article) {
   if (sharedState.readIds.has(article.id)) return false;
   if (sharedState.later.some(a => a.id === article.id)) return false;
-  return currentCat === 'all' || article.category === currentCat;
+  return notHidden(article) && catMatch(article);
 }
 
 // The inbox: every unread, not-saved story in the digest, de-duplicated to one
@@ -1392,7 +1439,7 @@ function visible(article) {
 function inboxReps() {
   const inLater = laterIdSet();
   return dedupeToReps(allArticles.filter(
-    a => !sharedState.readIds.has(a.id) && !inLater.has(a.id)));
+    a => !sharedState.readIds.has(a.id) && !inLater.has(a.id) && notHidden(a)));
 }
 
 function formatTime(isoString) {
@@ -1552,7 +1599,7 @@ window.openClusterMember = function(repId, memberId, url) {
     if (!sharedState.history.find(h => h.id === memberId)) {
       sharedState.history.push({
         id: member.id, title: member.title, url: member.url,
-        source: member.source, category: member.category,
+        source: member.source, category: member.category, topics: topicsOf(member),
         viewedAt: new Date().toISOString(),
       });
     }
@@ -1593,6 +1640,7 @@ function openArticle(id, url) {
         url: article.url,
         source: article.source,
         category: article.category,
+        topics: topicsOf(article),
         viewedAt: new Date().toISOString(),
       });
       updateBadges();
@@ -1621,6 +1669,7 @@ function saveForLater(id) {
       url: article.url,
       source: article.source,
       category: article.category,
+      topics: topicsOf(article),
       savedAt: new Date().toISOString(),
     });
   }
@@ -1671,6 +1720,7 @@ function openLaterArticle(id) {
       url: article.url,
       source: article.source,
       category: article.category,
+      topics: topicsOf(article),
       viewedAt: new Date().toISOString(),
     });
   }
@@ -1680,56 +1730,88 @@ function openLaterArticle(id) {
 }
 
 /* ── Category nav ─────────────────────────────────────── */
+// Per-topic tallies: a story counts once under each of its topics, so the
+// chips match what each filter actually shows.
+function topicCounts(items) {
+  const counts = { all: 0 };
+  items.forEach(a => {
+    counts.all++;
+    topicsOf(a).forEach(t => { counts[t] = (counts[t] || 0) + 1; });
+  });
+  return counts;
+}
+
+// The chip row. On Home a chip can also be hidden (right-click, or long-press
+// on touch): its stories leave the feed until you tap the chip again.
+function catChips(counts, canHide) {
+  let lastGroup = '';
+  return Object.keys(CATS).map(key => {
+    const c = CATS[key];
+    const hidden = canHide && hiddenCats.has(key);
+    const n = counts[key] || 0;
+    const badge = n > 0 && !hidden ? `<span class="badge">${n}</span>` : '';
+    let label = '';
+    if (key !== 'all' && c.group && c.group !== lastGroup) label = `<span class="catgroup">${escapeHtml(c.group)}</span>`;
+    if (key !== 'all') lastGroup = c.group || '';
+    const hideAttrs = canHide && key !== 'all'
+      ? ` oncontextmenu="return catHideGesture(event, ${jsArg(key)})" onpointerdown="catPressStart(event, ${jsArg(key)})" onpointerup="catPressEnd()" onpointerleave="catPressEnd()" title="${hidden ? 'Hidden — tap to show again' : 'Right-click or long-press to hide this topic'}"`
+      : '';
+    const cls = `cattab${key === currentCat ? ' active' : ''}${hidden ? ' hidden-topic' : ''}`;
+    return `${label}<button class="${cls}" data-cat="${escapeHtml(key)}" onclick="catClick(${jsArg(key)})"${hideAttrs}>${c.c ? `<span class="cat-dot" style="background:${c.c}"></span>` : ''}${escapeHtml(c.label)}${badge}</button>`;
+  }).join('');
+}
+
 function buildCatNav() {
   const bar = document.getElementById('catbar');
-
   if (currentView === 'digest') {
     bar.style.display = 'flex';
-    const counts = {};
-    // Per-category tallies over the retained inbox (today + carried), as
-    // stories — kept in step with the nav badge and the cards on screen.
-    inboxReps().forEach(a => {
-      counts.all = (counts.all || 0) + 1;
-      counts[a.category] = (counts[a.category] || 0) + 1;
-    });
-    bar.innerHTML = Object.keys(CATS).map(key => {
-      const c = CATS[key];
-      const n = counts[key] || 0;
-      const badge = n > 0 ? `<span class="badge">${n}</span>` : '';
-      return `<button class="cattab${key === currentCat ? ' active' : ''}" data-cat="${escapeHtml(key)}" onclick="setCategory(${jsArg(key)})">${c.c ? `<span class="cat-dot" style="background:${c.c}"></span>` : ''}${escapeHtml(c.label)}${badge}</button>`;
-    }).join('');
+    // Over the retained inbox (today + carried), as stories — kept in step
+    // with the nav badge and the cards on screen.
+    bar.innerHTML = catChips(topicCounts(inboxReps()), true);
   } else if (currentView === 'later') {
     bar.style.display = 'flex';
-    const later = sharedState.later;
-    const counts = {};
-    later.forEach(a => {
-      counts.all = (counts.all || 0) + 1;
-      counts[a.category] = (counts[a.category] || 0) + 1;
-    });
-    bar.innerHTML = Object.keys(CATS).map(key => {
-      const c = CATS[key];
-      const n = counts[key] || 0;
-      const badge = n > 0 ? `<span class="badge">${n}</span>` : '';
-      return `<button class="cattab${key === currentCat ? ' active' : ''}" data-cat="${escapeHtml(key)}" onclick="setCategory(${jsArg(key)})">${c.c ? `<span class="cat-dot" style="background:${c.c}"></span>` : ''}${escapeHtml(c.label)}${badge}</button>`;
-    }).join('');
+    bar.innerHTML = catChips(topicCounts(sharedState.later), false);
   } else if (currentView === 'history') {
     bar.style.display = 'flex';
-    const hist = historyItems();
-    const counts = {};
-    hist.forEach(a => {
-      counts.all = (counts.all || 0) + 1;
-      if (a.category) counts[a.category] = (counts[a.category] || 0) + 1;
-    });
-    bar.innerHTML = Object.keys(CATS).map(key => {
-      const c = CATS[key];
-      const n = counts[key] || 0;
-      const badge = n > 0 ? `<span class="badge">${n}</span>` : '';
-      return `<button class="cattab${key === currentCat ? ' active' : ''}" data-cat="${escapeHtml(key)}" onclick="setCategory(${jsArg(key)})">${c.c ? `<span class="cat-dot" style="background:${c.c}"></span>` : ''}${escapeHtml(c.label)}${badge}</button>`;
-    }).join('');
+    bar.innerHTML = catChips(topicCounts(historyItems()), false);
   } else {
     // Settings (and any future non-list views) — no category filter applies.
     bar.style.display = 'none';
   }
+}
+
+let catPressTimer = null;
+let catPressFired = false;
+window.catPressStart = function(ev, key) {
+  if (ev.pointerType === 'mouse') return;          // mouse users have right-click
+  catPressFired = false;
+  clearTimeout(catPressTimer);
+  catPressTimer = setTimeout(() => { catPressFired = true; toggleHiddenCat(key); }, 550);
+};
+window.catPressEnd = function() { clearTimeout(catPressTimer); catPressTimer = null; };
+window.catHideGesture = function(ev, key) {
+  ev.preventDefault();
+  if (!catPressFired) toggleHiddenCat(key);         // long-press already toggled
+  return false;
+};
+window.catClick = function(key) {
+  if (catPressFired) { catPressFired = false; return; }   // the long-press's click
+  if (currentView === 'digest' && hiddenCats.has(key)) { toggleHiddenCat(key); return; }
+  setCategory(key);
+};
+
+function toggleHiddenCat(key) {
+  if (!key || key === 'all') return;
+  if (hiddenCats.has(key)) hiddenCats.delete(key);
+  else {
+    hiddenCats.add(key);
+    if (currentCat === key) { currentCat = 'all'; digestCat = 'all'; }
+  }
+  sharedState.viewState = { ...sharedState.viewState, currentView, currentCat, digestCat,
+                            hiddenCats: [...hiddenCats] };
+  saveSharedState().catch(() => {});
+  updateCatCounts();
+  if (currentView === 'digest') render();
 }
 
 function updateCatCounts() {
@@ -1829,7 +1911,7 @@ function renderSearchResults() {
   // Saved (Read Later) matches — highlighted at the top. Matched by keyword over
   // the saved item (incl. its TL;DR), or because it still surfaced semantically.
   const savedHits = sharedState.later.filter(a =>
-    (currentCat === 'all' || a.category === currentCat) &&
+    catMatch(a) &&
     (semIds.has(a.id) ||
      (ql && (a.title + ' ' + (a.source || '') + ' ' + (a.bottomLine || '') + ' '
              + ((a.tldr || []).join(' '))).toLowerCase().includes(ql))));
@@ -2184,7 +2266,7 @@ function tldrPanel(a) {
 
 function renderLater() {
   const all   = sharedState.later;
-  const later = currentCat === 'all' ? all : all.filter(a => a.category === currentCat);
+  const later = all.filter(catMatch);
   const el    = document.getElementById('later-content');
 
   if (all.length === 0) {
@@ -2234,7 +2316,7 @@ function clearLater() {
 /* ── Render History ───────────────────────────────────── */
 function renderHistory() {
   const all   = historyItems();
-  const hist  = currentCat === 'all' ? all : all.filter(a => a.category === currentCat);
+  const hist  = all.filter(catMatch);
   const el    = document.getElementById('history-content');
 
   if (all.length === 0) {
@@ -2756,6 +2838,12 @@ function drawCatEditor() {
           <button class="cat-del" onclick="deleteCat(${i})" aria-label="Remove category">✕</button>
         </div>
         <input class="cat-input cat-interest" placeholder="What you want here — a real sentence; the scorer ranks against it" value="${escapeAttr(c.interest || '')}" oninput="editCat(${i},'interest',this.value)">
+        <div class="cat-row-meta">
+          <input class="cat-input cat-group" placeholder="Group (optional)" maxlength="24" value="${escapeAttr(c.group || '')}" oninput="editCat(${i},'group',this.value)" title="Chips with the same group sit together, e.g. Tech">
+          <label class="cat-boost" title="Off = a label for filtering only; it never raises a story's relevance">
+            <input type="checkbox" ${c.boost === false ? '' : 'checked'} onchange="editCat(${i},'boost',this.checked)"> Boosts relevance
+          </label>
+        </div>
       </div>
     </div>`).join('');
   pane.innerHTML = `
@@ -2763,7 +2851,9 @@ function drawCatEditor() {
       <div class="settings-help">
         Categories define what the digest is about. The <b>interest</b> line is woven into the scorer's
         prompt — write a real sentence about what you actually want in that bucket; that's what makes
-        ranking good. Order = priority. Changes apply on the next run.
+        ranking good. Order = priority. Each story gets a main category plus up to two more topics, so it
+        shows under every chip it belongs to. Untick <b>Boosts relevance</b> for a topic you only want to
+        filter by (e.g. Politics). Saving re-files stored stories right away; scoring changes apply on the next run.
       </div>
       <div class="cat-list">${rows || '<p class="cfg-help">No categories yet — add one below.</p>'}</div>
       <button class="feed-btn" onclick="addCat()">+ Add category</button>
@@ -2782,7 +2872,7 @@ window.moveCat = (i, dir) => {
   drawCatEditor();
 };
 window.deleteCat = (i) => { catEditList.splice(i, 1); drawCatEditor(); };
-window.addCat = () => { catEditList.push({ key: '', label: '', color: '#8a90a0', interest: '' }); drawCatEditor(); };
+window.addCat = () => { catEditList.push({ key: '', label: '', color: '#8a90a0', interest: '', group: '', boost: true }); drawCatEditor(); };
 
 window.saveCategories = async () => {
   const cleaned = catEditList.map(c => ({
@@ -2790,6 +2880,8 @@ window.saveCategories = async () => {
     label: (c.label || '').trim(),
     color: c.color || '#8a90a0',
     interest: (c.interest || '').trim(),
+    group: (c.group || '').trim(),
+    boost: c.boost !== false,
   })).filter(c => c.key);
   const keys = cleaned.map(c => c.key);
   if (!cleaned.length) return setCfgStatus('cats', 'err', 'Add at least one category.');
@@ -2804,7 +2896,7 @@ window.saveCategories = async () => {
     catEditList = saved.map(c => ({ ...c }));
     buildCats(saved);   // nav + card colours update live for when you return to Home
     drawCatEditor();
-    setCfgStatus('cats', 'ok', 'Saved — applies on the next run.');
+    setCfgStatus('cats', 'ok', 'Saved — stories are being re-filed; scoring changes apply on the next run.');
   } catch (e) { setCfgStatus('cats', 'err', e.message || String(e)); }
 };
 

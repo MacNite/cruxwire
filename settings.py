@@ -31,6 +31,10 @@ MAX_KEYWORD_LEN = 80
 # A category is data, not code, so a self-hoster can make the app about THEIR
 # interests by editing categories.json (key/label/color + an `interest` line
 # that the scorer's prompt is built from — the interest text matters most).
+# Optional fields:
+#   group  - a short parent label ("Tech"); the UI shows same-group chips together.
+#   boost  - default true. false = a topic for filtering/labelling only: it is
+#            still assigned to articles, but it never raises relevance.
 # These defaults are the ultimate fallback if the file is missing/malformed.
 DEFAULT_CATEGORIES = [
     {'key': 'ai', 'label': 'AI', 'color': '#7b5cff',
@@ -74,13 +78,24 @@ def _coerce_categories(items):
             continue
         seen.add(key)
         label = str(c.get('label') or key).strip()[:40] or key
+        boost = c.get('boost', True)
         out.append({
             'key': key,
             'label': label,
             'color': _coerce_color(c.get('color')),
             'interest': str(c.get('interest') or label).strip()[:300],
+            'group': ' '.join(str(c.get('group') or '').split())[:24],
+            'boost': boost if isinstance(boost, bool) else str(boost).lower() not in ('false', '0', 'no', 'off'),
         })
     return out
+
+
+def boost_categories(categories):
+    """The categories that count as reader interests (boost != False). Never
+    empty: if every category is filter-only, all of them are used, so the
+    scorer always has something to score against."""
+    boosted = [c for c in categories if c.get('boost', True)]
+    return boosted or list(categories)
 
 
 def load_categories():

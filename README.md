@@ -18,8 +18,13 @@ No build step, **no Python dependencies** (pure stdlib), no external services ot
 
 ## Features
 
-- **LLM-ranked digest** - every article gets a 0-10 relevance score, a 1-2 sentence summary, and a
-  category from your local Ollama model.
+- **LLM-ranked digest** - every article gets a 0-10 relevance score, a 1-2 sentence summary, and
+  topics from your local Ollama model.
+- **Multi-topic filtering** - each story gets a main category plus up to two more topics (a story
+  on AI chip export rules lands under AI, Hardware *and* Politics), so it shows under every chip it
+  belongs to. Right-click or long-press a chip to hide that topic from Home; tap a card's topic tag
+  to filter to it. Categories can be grouped ("Tech", "World") and marked filter-only, so they
+  label stories without boosting them.
 - **Your own categories** - categories aren't hardcoded. Each carries an *interest description* you
   write (e.g. "Cooking - recipes, technique, equipment, restaurants"), and that sentence is woven into
   the scoring prompt - so "relevant" means what *you* actually care about. Editable in-app.
@@ -329,13 +334,25 @@ list in [.env.example](.env.example).
 ### Make it about *your* interests - categories
 
 The categories (their labels, colors, and the **interest descriptions the scorer ranks against**) are
-data, not code. Edit `categories.json` on the data volume - each entry is
-`{ "key", "label", "color", "interest" }`, in priority order:
+data, not code. Edit them in Settings → Categories, or edit `categories.json` on the data volume - each
+entry is `{ "key", "label", "color", "interest", "group"?, "boost"? }`, in priority order:
 
 ```json
 [ { "key": "cooking", "label": "Cooking", "color": "#ff8800",
-    "interest": "Cooking -- recipes, technique, equipment, restaurants" } ]
+    "interest": "Cooking -- recipes, technique, equipment, restaurants" },
+  { "key": "politics", "label": "Politics", "color": "#e11d48", "group": "World",
+    "interest": "Politics -- elections, legislation, government", "boost": false } ]
 ```
+
+- `group` (optional) - chips with the same group sit together in the filter bar under that label.
+- `boost` (default `true`) - `false` makes the category filter-only: stories are still tagged with it,
+  but its interest line is left out of the relevance prompt, so it never raises a story's score.
+
+Each article gets a primary category plus up to two secondary **topics**. The model picks them; with
+more than `TOPIC_CANDIDATES` (default 6) categories it is only offered the closest few by embedding,
+which keeps small local models accurate. Saving the category list re-files the stored digest straight
+away (embeddings only, no re-scoring), and a category the model was never offered is attached when an
+article's embedding is close enough (`TOPIC_SIM_MIN`, default 0.62).
 
 The `interest` line is the important part: it's woven into the LLM's scoring prompt, so write a real
 sentence about what you actually want in that bucket - that's what makes relevance scoring good. Keys
@@ -363,10 +380,10 @@ next run. The pipeline, feed validation, and UI all read from this one place.
 | `GET` | `/models` | Ollama models available on the host (admin) |
 | `GET` | `/status` | Live pipeline run status (for the "updating…" pill) |
 | `GET` | `/runs` | Recent pipeline run log (powers Settings → Runs; admin) |
-| `GET` | `/categories` | Configured categories (key / label / color / interest) |
+| `GET` / `PUT` | `/categories` | Configured categories (key / label / color / interest / group / boost) · save the list (re-files the stored digest) |
 | `GET` | `/search?q=&threshold=` | Semantic search - ranked digest matches by embedding similarity |
 | `POST` | `/refresh` | Trigger a pipeline run now (202 started · 409 already running · 429 cooldown) |
-| `GET` | `/articles?limit=&category=&exclude=` | Ranked, diversified page of unread stories not in `exclude` (comma-separated ids already shown; powers *Discover more*). `offset=` paging is still accepted |
+| `GET` | `/articles?limit=&category=&exclude=` | Ranked, diversified page of unread stories not in `exclude` (comma-separated ids already shown; powers *Discover more*). `offset=` paging is still accepted. Topic filters: `topics=a,b` with `mode=any` (default) or `all`, matched against every topic of a story, and `hide=c,d` to drop stories carrying those topics; `category=` matches any topic too |
 | `GET` / `POST` | `/feedback` | List votes (`?full=1` for details) / vote `{id, vote: 1 \| -1 \| 0 \| null}` by server-known id |
 | `GET` | `/onboarding` | Wizard status, progress, feeds and a balanced candidate batch (`?n=&exclude=&force=1`) |
 | `POST` | `/onboarding/sources` | Validate (with sample headlines) and add a feed, or a Google News search `{query, lang, country}` |
