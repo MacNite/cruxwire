@@ -230,8 +230,22 @@ score          = (1 − w) × base_score + w × 10 × interest_match       # w =
 ```
 
 `base_score` (the shared LLM score) and `interest_match` are kept on each digest article, so the
-score chip shows where a ranking came from. The article lands in one of *your* categories: the
-model's pick if you have it, else the category you filed the feed under, else your closest interest.
+score chip shows where a ranking came from. Only categories with `boost` on count as interests;
+filter-only ones never raise a score.
+
+### Topics
+
+Every article is filed under one of *your* categories as its primary (the model's first pick if you
+have it, else the category you filed the feed under, else your closest interest by embedding), plus up
+to `MAX_TOPICS - 1` secondary topics: the model's other picks, then any category the model was *not*
+offered whose embedding similarity clears `TOPIC_SIM_MIN`. This runs per user, every run, and right
+after the category list is saved - embeddings only, no chat calls.
+
+| Env | Default | Effect |
+|-----|---------|--------|
+| `MAX_TOPICS` | `3` | Topics per article, primary included. |
+| `TOPIC_CANDIDATES` | `6` | With more categories than this, the scorer only sees the closest N (plus the feed's category). One extra embedding per new article. `0` = always offer all. |
+| `TOPIC_SIM_MIN` | `0.62` | Similarity at which a category the model wasn't offered is attached. Too many stray tags → raise it; new categories stay empty → lower it. |
 
 - Off-topic stories still ranking high → raise *Interest match weight*.
 - Only ever the same narrow topics → lower it, or broaden your category interest descriptions.

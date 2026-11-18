@@ -356,11 +356,30 @@ stable_id = article_ids.stable_id
 # ──────────────────────────────────────────────────────────────────────
 # Scoring + embedding (Ollama)
 # ──────────────────────────────────────────────────────────────────────
+# Topics: every article gets a primary category plus up to MAX_TOPICS - 1
+# secondary topics from the reader's category list, so an article about AI
+# chip export rules can be filed under AI, Hardware and Politics at once.
+MAX_TOPICS = max(1, int(os.environ.get('MAX_TOPICS', '3')))
+# With more categories than this, the scorer is only offered the closest few
+# (by embedding) — small local models pick far more accurately from a short
+# list. 0 disables the shortlist.
+TOPIC_CANDIDATES = max(0, int(os.environ.get('TOPIC_CANDIDATES', '6')))
+# Cosine similarity at which a category the scorer was NOT offered (e.g. one
+# added after the article was scored) is attached as a secondary topic.
+TOPIC_SIM_MIN = float(os.environ.get('TOPIC_SIM_MIN', '0.62'))
+
+_TOPIC_RULE = ("- topics must be 1-3 of the exact keys listed in the schema, the main "
+               "topic first. Add a second or third only if the article is clearly "
+               "also about it.")
+
+
 def build_system_prompt(categories):
     """The scorer's system prompt, built from the configured categories — the
-    `interest` lines (in priority order) are what tune relevance to the reader."""
+    `interest` lines (in priority order) are what tune relevance to the reader.
+    Filter-only categories (boost: false) are left out of the interests; they
+    are still offered as topics in the schema."""
     interests = "\n".join(f"{i + 1}. {c['interest']}"
-                          for i, c in enumerate(categories))
+                          for i, c in enumerate(settings.boost_categories(categories)))
     return ("You are a relevance scorer for a personal news digest.\n\n"
             "Reader interests, roughly in priority order:\n"
             f"{interests}\n\n"
@@ -371,18 +390,18 @@ def build_system_prompt(categories):
             "Rules:\n"
             "- Respond ONLY with valid JSON. No markdown fences, no commentary.\n"
             "- summary must be 1-2 sentences, max 180 characters, no em dashes.\n"
-            "- category must be one of the exact strings listed in the schema.")
+            f"{_TOPIC_RULE}")
 
 
 def build_neutral_prompt(categories):
     """Multi-user scorer prompt: one score per article that is NOT tied to any
     one reader (each user's interests are applied afterwards by embedding, see
-    apply_interest), plus a category from the union of everyone's categories."""
+    apply_interest), plus topics from the union of everyone's categories."""
     topics = "\n".join(f"- {c['key']}: {c['interest']}" for c in categories)
     return ("You are an editor rating stories for a general news digest.\n\n"
             "Rate how substantive and newsworthy the article is for a curious, "
             "well-informed reader, regardless of topic.\n\n"
-            "Categories (key: description):\n"
+            "Topics (key: description):\n"
             f"{topics}\n\n"
             "Scoring:\n"
             "8-10 = important or exceptionally informative, worth reading in full\n"
@@ -391,7 +410,93 @@ def build_neutral_prompt(categories):
             "Rules:\n"
             "- Respond ONLY with valid JSON. No markdown fences, no commentary.\n"
             "- summary must be 1-2 sentences, max 180 characters, no em dashes.\n"
-            "- category must be one of the exact keys listed in the schema.")
+            f"{_TOPIC_RULE}")
+
+
+def category_vectors(categories, embed_model, embed_cache=None):
+    """[(key, unit vector)] for each category's label + interest line. One
+    embedding per category, cached, so this is cheap to call every run."""
+    out = []
+    for c in categories:
+        text = f"{c.get('label', '')}: {c.get('interest') or c.get('label') or c['key']}"
+        v = embed_cache.embed(text, embed_model) if embed_cache else _embed(text, embed_model)
+        n = _normalize(v) if v else None
+        if n:
+            out.append((c['key'], n))
+    return out
+
+
+def _sims(vec, cat_vecs):
+    """{category key: cosine similarity} for an article vector, or {}."""
+    n = _normalize(vec) if vec else None
+    if not n:
+        return {}
+    return {k: sum(x * y for x, y in zip(n, v)) for k, v in cat_vecs if len(v) == len(n)}
+
+
+def topic_candidates(sims, valid_cats, hint=None, k=None):
+    """The shortlist of category keys offered to the scorer: the k closest by
+    embedding (plus the feed's category as a hint). All of them when the list
+    is short, the shortlist is disabled, or there is no embedding."""
+    k = TOPIC_CANDIDATES if k is None else k
+    if not k or len(valid_cats) <= k or not sims:
+        return list(valid_cats)
+    ranked = sorted((key for key in valid_cats if key in sims), key=lambda key: -sims[key])
+    picked = ranked[:k]
+    if hint in valid_cats and hint not in picked:
+        picked.append(hint)
+    return [key for key in valid_cats if key in picked]   # keep configured order
+
+
+def clean_topics(raw, valid, limit=None):
+    """De-duplicated, valid topic keys in order, capped at MAX_TOPICS."""
+    limit = MAX_TOPICS if limit is None else limit
+    out = []
+    for t in raw if isinstance(raw, (list, tuple)) else [raw]:
+        t = str(t or '').strip().lower() if isinstance(t, str) else None
+        if t and t in valid and t not in out:
+            out.append(t)
+    return out[:limit]
+
+
+def assign_topics(articles, categories, cat_vecs):
+    """File each article under one of THIS reader's categories (`category`,
+    the primary) plus up to MAX_TOPICS - 1 secondary `topics`.
+
+    Primary: the scorer's first pick if the reader has that category, else the
+    category the reader filed the source feed under, else the closest interest
+    by embedding. Secondary: the scorer's other picks, then — for categories
+    the scorer was never offered (added later, or outside the shortlist) — any
+    whose embedding similarity clears TOPIC_SIM_MIN. Embedding-only, so it is
+    cheap to redo every run and right after the category list changes."""
+    keys = [c['key'] for c in categories]
+    keyset = set(keys)
+    for a in articles:
+        sims = _sims(a.get('embedding'), cat_vecs)
+        llm = a.get('llm_topics')
+        if not isinstance(llm, list):           # records without the scorer's picks
+            llm = a.get('topics') if isinstance(a.get('topics'), list) and a['topics'] \
+                else [a.get('llm_category') or a.get('category')]
+        llm = clean_topics(llm, keyset, limit=len(keys))
+        vocab = a.get('llm_vocab')
+        vocab = set(vocab) if isinstance(vocab, list) else None
+        hint = a.get('_hint_cat')
+        best = max(sims, key=sims.get) if sims else None
+        if llm:
+            primary = llm[0]
+        elif hint in keyset:
+            primary = hint
+        elif best:
+            primary = best
+        elif a.get('category') in keyset:
+            primary = a['category']
+        else:
+            primary = keys[0] if keys else a.get('category')
+        extra = [k for k in sorted(sims, key=sims.get, reverse=True)
+                 if sims[k] >= TOPIC_SIM_MIN and (vocab is None or k not in vocab)]
+        a['category'] = primary
+        a['topics'] = clean_topics([primary] + llm[1:] + extra, keyset) or [primary]
+    return articles
 
 
 # Per-user interest matching (multi-user mode): cosine similarity between an
@@ -401,45 +506,27 @@ INTEREST_SIM_LO = float(os.environ.get('INTEREST_SIM_LO', '0.45'))
 INTEREST_SIM_HI = float(os.environ.get('INTEREST_SIM_HI', '0.75'))
 
 
-def apply_interest(articles, categories, embed_model, embed_cache, weight):
+def apply_interest(articles, categories, cat_vecs, weight):
     """Multi-user relevance: blend the shared, reader-neutral LLM score with
-    how well each article matches THIS user's category interests, and put it
-    in one of the user's own categories. Cheap — one embedding per category
-    (cached), dot products per article, no chat calls.
+    how well each article matches THIS user's category interests. Cheap — dot
+    products against the (cached) category vectors, no chat calls. Only
+    boosting categories count; filter-only ones never raise relevance.
 
         score = (1 - weight) * base_score + weight * 10 * interest_match
 
-    Category: the LLM's pick if the user has that category, else the category
-    the user filed the source feed under, else the closest interest."""
-    cat_vecs = []
-    for c in categories:
-        text = f"{c.get('label', '')}: {c.get('interest') or c.get('label') or c['key']}"
-        v = embed_cache.embed(text, embed_model) if embed_cache else _embed(text, embed_model)
-        n = _normalize(v) if v else None
-        if n:
-            cat_vecs.append((c['key'], n))
-    keys = {c['key'] for c in categories}
+    Topic assignment is separate (assign_topics)."""
+    boosted = {c['key'] for c in settings.boost_categories(categories)}
+    vecs = [(k, v) for k, v in cat_vecs if k in boosted]
     weight = max(0.0, min(1.0, weight))
     for a in articles:
         base = a.get('base_score', a.get('score', 0.0))
         a['base_score'] = base
-        n = _normalize(a['embedding']) if a.get('embedding') else None
-        best_key, best_sim = None, None
-        if n and cat_vecs:
-            best_key, best_sim = max(((k, sum(x * y for x, y in zip(n, v))) for k, v in cat_vecs),
-                                     key=lambda kv: kv[1])
-        llm_cat, hint = a.get('llm_category') or a.get('category'), a.get('_hint_cat')
-        if llm_cat in keys:
-            a['category'] = llm_cat
-        elif hint in keys:
-            a['category'] = hint
-        elif best_key:
-            a['category'] = best_key
-        if best_sim is None:
+        sims = _sims(a.get('embedding'), vecs)
+        if not sims:
             a['interest_match'] = None
             a['score'] = base
             continue
-        match = calibrate(best_sim, INTEREST_SIM_LO, INTEREST_SIM_HI)
+        match = calibrate(max(sims.values()), INTEREST_SIM_LO, INTEREST_SIM_HI)
         a['interest_match'] = round(match, 3)
         a['score'] = round((1 - weight) * base + weight * 10.0 * match, 2)
     return articles
@@ -467,10 +554,12 @@ def _fetch_page(url):
 
 
 def _score(article, excerpt, chat_model, system_prompt, valid_cats):
-    """Ask Ollama for {score, summary, category}; fall back gracefully.
+    """Ask Ollama for {score, summary, topics}; fall back gracefully.
 
-    `system_prompt` and `valid_cats` come from the configured categories.
-    Returns (score, summary, category, ok, ms). `ok` is whether Ollama answered
+    `system_prompt` comes from the configured categories; `valid_cats` is the
+    list of keys the model may pick from (possibly a shortlist).
+    Returns (score, summary, topics, ok, ms) — `topics` is [] when the model
+    gave no valid topic (the caller then falls back to the feed's category). `ok` is whether Ollama answered
     (False ⇒ the call errored/timed out and the score is a fallback); `ms` is
     the chat-call latency. Both feed the run-history health signals so a silent
     Ollama outage (many fallbacks) or a CPU fallback (high latency) is visible.
@@ -484,9 +573,10 @@ def _score(article, excerpt, chat_model, system_prompt, valid_cats):
         "Return this exact schema:\n"
         '{\n  "score": <number 0.0-10.0, one decimal place>,\n'
         '  "summary": "<1-2 sentences, max 180 chars, no em dashes>",\n'
-        f'  "category": "<one of: {", ".join(valid_cats)}>"\n}}'
+        f'  "topics": ["<main topic>", "<optional 2nd>", "<optional 3rd>"]\n}}\n'
+        f'Allowed topic keys: {", ".join(valid_cats)}'
     )
-    score, summary, category = 5.0, '', article['category']
+    score, summary, topics = 5.0, '', []
     ok = False
     t0 = time.monotonic()
     try:
@@ -512,14 +602,15 @@ def _score(article, excerpt, chat_model, system_prompt, valid_cats):
             pass
         if isinstance(parsed.get('summary'), str):
             summary = parsed['summary'].replace('—', '--').strip()[:200]
-        if parsed.get('category') in valid_cats:
-            category = parsed['category']
+        topics = clean_topics(parsed.get('topics'), set(valid_cats))
+        if not topics:      # older prompt shape / models that answer {"category": ...}
+            topics = clean_topics(parsed.get('category'), set(valid_cats))
     except Exception:
         pass
     ms = (time.monotonic() - t0) * 1000.0
     if not summary:
         summary = article['title'][:160]
-    return score, summary, category, ok, ms
+    return score, summary, topics, ok, ms
 
 
 def _embed(text, embed_model=EMBED_MODEL):
@@ -549,14 +640,24 @@ def image_fields(article, page_image=None, page_kind='og', cache=True):
             'fallback_image': images.fallback_image(topic), 'topic': topic}
 
 
-def enrich(article, chat_model, embed_model, system_prompt, valid_cats, embed_cache=None):
-    """Fetch page, score/summarise, and embed one article."""
+def enrich(article, chat_model, embed_model, system_prompt, valid_cats, embed_cache=None,
+           cat_vecs=None):
+    """Fetch page, score/summarise, and embed one article.
+
+    With `cat_vecs` and more categories than TOPIC_CANDIDATES, the scorer is
+    only offered the closest few categories (one extra embedding call)."""
     t0 = time.monotonic()
     page_image, excerpt = _fetch_page(article['url'])
     if not excerpt and article.get('description'):
         excerpt = article['description'][:900]
-    score, summary, category, score_ok, score_ms = _score(
-        article, excerpt, chat_model, system_prompt, valid_cats)
+    offered = list(valid_cats)
+    if cat_vecs and TOPIC_CANDIDATES and len(valid_cats) > TOPIC_CANDIDATES:
+        probe = f"{article['title']}\n{(excerpt or '')[:400]}"
+        pv = embed_cache.embed(probe, embed_model) if embed_cache else _embed(probe, embed_model)
+        offered = topic_candidates(_sims(pv, cat_vecs), valid_cats, article.get('category'))
+    score, summary, topics, score_ok, score_ms = _score(
+        article, excerpt, chat_model, system_prompt, offered)
+    category = topics[0] if topics else article['category']
     text = f"{article['title']}\n{summary}"
     embedding = embed_cache.embed(text, embed_model) if embed_cache else _embed(text, embed_model)
     out = {
@@ -566,6 +667,13 @@ def enrich(article, chat_model, embed_model, system_prompt, valid_cats, embed_ca
         'source': article['source'],
         'publisher': article.get('publisher') or article['source'],
         'category': category,
+        'topics': topics or [category],
+        # What the scorer said and what it was allowed to pick from, so topics
+        # can be re-derived for each reader / after a category edit without
+        # another chat call (see assign_topics).
+        'llm_category': topics[0] if topics else None,
+        'llm_topics': topics,
+        'llm_vocab': offered,
         'score': score,
         'summary': summary,
         'description': article.get('description') or '',
@@ -1391,9 +1499,11 @@ def build_user_digest(inp, fresh, pool_by_id, embed_model, embed_cache, multi):
     if carried:
         log(f'carrying forward {carried} unread stor{"y" if carried == 1 else "ies"}')
 
+    categories = settings.load_categories()
+    cat_vecs = category_vectors(categories, embed_model, embed_cache)
+    assign_topics(mine, categories, cat_vecs)
     if multi:
-        apply_interest(mine, settings.load_categories(), embed_model, embed_cache,
-                       cfg['interest_weight'])
+        apply_interest(mine, categories, cat_vecs, cfg['interest_weight'])
     for a in mine:
         a.pop('_hint_cat', None)
 
@@ -1430,6 +1540,53 @@ def build_user_digest(inp, fresh, pool_by_id, embed_model, embed_cache, multi):
     corpus_archive.archive_articles(mine, emb_index, embed_model, cfg, log=log,
                                     owner=users.current().get('id'))
     return mine, len({a['cluster_id'] for a in mine})
+
+
+def retag_digest():
+    """Re-file the current user's stored digest under their current category
+    list (primary category + topics), using the stored article embeddings and
+    the scorer's recorded picks — no chat calls, no re-scoring. Run right after
+    the category list is saved, so a new category fills in immediately instead
+    of on the next pipeline run. Skips (returns False) while a run is active:
+    that run re-files everything with the new list itself."""
+    if not _run_lock.acquire(blocking=False):
+        return False
+    try:
+        try:
+            with open(users.path(DIGEST_FILE), 'r', encoding='utf-8') as fh:
+                digest = json.load(fh)
+        except Exception:
+            return False
+        arts = digest.get('articles') if isinstance(digest, dict) else None
+        if not isinstance(arts, list) or not arts:
+            return False
+        embed_model = settings.load()['embed_model']
+        index = _load_embeddings_index(embed_model)
+        cache = EmbedCache()
+        categories = settings.load_categories()
+        cat_vecs = category_vectors(categories, embed_model, cache)
+        work = [a for a in arts if isinstance(a, dict)]
+        for a in work:
+            if index.get(a.get('id')):
+                a['embedding'] = index[a['id']]
+        assign_topics(work, categories, cat_vecs)
+        for a in work:
+            a.pop('embedding', None)
+        digest['articles'] = arts
+        _atomic_write_json(users.path(DIGEST_FILE), digest)
+        cache.save()
+        log(f're-filed {len(work)} stored articles under {len(categories)} categories')
+        return True
+    except Exception as exc:
+        log(f're-filing after category change failed: {exc}')
+        return False
+    finally:
+        _run_lock.release()
+
+
+def retag_digest_async():
+    """retag_digest() in a background thread, as the current user."""
+    users.spawn(retag_digest, name='retag')
 
 
 def run_once():
@@ -1579,9 +1736,12 @@ def run_once():
             system_prompt = build_system_prompt(categories)
         valid_cats = [c['key'] for c in categories]
         embed_cache = EmbedCache()
+        cat_vecs = (category_vectors(categories, embed_model, embed_cache)
+                    if to_score and TOPIC_CANDIDATES and len(valid_cats) > TOPIC_CANDIDATES else None)
 
         def _enrich(article):
-            return enrich(article, chat_model, embed_model, system_prompt, valid_cats, embed_cache)
+            return enrich(article, chat_model, embed_model, system_prompt, valid_cats, embed_cache,
+                          cat_vecs)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=cfg['score_concurrency']) as ex:
             scored = list(ex.map(_enrich, to_score))

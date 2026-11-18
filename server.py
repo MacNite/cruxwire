@@ -40,7 +40,8 @@ Personalization / onboarding:
   GET  /feedback              {votes:{id:vote}} (+ items[] with ?full=1)
   POST /feedback              {id, vote: 1|-1|0|null} by server-known article id
   GET  /image?id=             resolved preview image (RSS → og:image → local fallback)
-  GET  /articles              ranked, diversified, unread digest page (?offset&limit&category)
+  GET  /articles              ranked, diversified, unread digest page
+                              (?offset&limit&category | ?topics=a,b&mode=any|all&hide=c,d)
   GET  /static/fallback/*.svg local fallback illustrations
 
 Security: mutating requests with a cross-site Origin are refused (CSRF guard);
@@ -203,6 +204,8 @@ DEFAULT_STATE = {
         'digestCat': 'all',
         # Client display preference: show per-story ranking score chips. Opt-in.
         'showScores': False,
+        # Topic keys hidden from the Home feed (right-click / long-press a chip).
+        'hiddenCats': [],
     },
     # Per-source interaction counters used by client-side ranking. Persists
     # independently of readIds/later/history so the user's inbox hygiene
@@ -363,6 +366,9 @@ def _valid_saved_item(item):
     strings when present (they are rendered and compared as strings)."""
     if not isinstance(item, dict) or not isinstance(item.get('id'), str):
         return False
+    topics = item.get('topics')
+    if topics is not None and not (isinstance(topics, list) and all(isinstance(t, str) for t in topics)):
+        return False
     return all(item.get(k) is None or isinstance(item.get(k), str)
                for k in ('url', 'title', 'source', 'category', 'savedAt', 'viewedAt'))
 
@@ -372,6 +378,9 @@ def normalize_payload(payload):
     vs_default = DEFAULT_STATE['viewState']
     raw_vs = payload.get('viewState') if isinstance(payload.get('viewState'), dict) else {}
     view_state = {**vs_default, **{k: raw_vs[k] for k in vs_default if k in raw_vs}}
+    hidden = view_state.get('hiddenCats')
+    view_state['hiddenCats'] = ([h[:40] for h in hidden if isinstance(h, str)][:100]
+                                if isinstance(hidden, list) else [])
 
     return {
         'updatedAt': payload.get('updatedAt') if isinstance(payload.get('updatedAt'), str) else None,
@@ -613,7 +622,35 @@ def settings_payload():
     }
 
 
-def ranked_articles(category='all', offset=0, limit=20, exclude=None):
+def article_topics(a):
+    """An article's topic keys: `topics` (primary first), or just its category
+    for digests written before topics existed."""
+    t = a.get('topics')
+    if isinstance(t, list) and t:
+        return [x for x in t if isinstance(x, str)]
+    return [a['category']] if isinstance(a.get('category'), str) and a['category'] else []
+
+
+def topic_filter(topics=None, mode='any', hide=None):
+    """A predicate for the digest's topic filter. `topics` (keys) must match
+    any / all of an article's topics; an article with any `hide` topic is
+    dropped. No topics and no hide = everything passes."""
+    want = [t for t in (topics or []) if t and t != 'all']
+    hide = set(t for t in (hide or []) if t)
+    match_all = mode == 'all'
+
+    def ok(a):
+        mine = set(article_topics(a))
+        if hide & mine:
+            return False
+        if not want:
+            return True
+        return all(t in mine for t in want) if match_all else any(t in mine for t in want)
+    return ok
+
+
+def ranked_articles(category='all', offset=0, limit=20, exclude=None,
+                    topics=None, mode='any', hide=None):
     """The digest as a ranked feed page: unread and unsaved stories only, one
     representative per same-story cluster, re-ranked by the composite score
     with topic/publisher diversity and the exploration share. Paging walks
@@ -622,7 +659,15 @@ def ranked_articles(category='all', offset=0, limit=20, exclude=None):
     `exclude` (ids the client already shows) is the stable way to page: the
     unread set shrinks as the reader marks stories read, so a numeric offset
     into it would skip unseen stories. With `exclude`, the page is simply the
-    top `limit` ranked stories not yet shown (offset is ignored)."""
+    top `limit` ranked stories not yet shown (offset is ignored).
+
+    Topic filter: `category` (one key, legacy) or `topics` (keys, matched
+    `mode` = any|all against every topic of an article, not just its primary
+    category); `hide` drops articles carrying any of those topics."""
+    wanted = list(topics or [])
+    if category and category != 'all' and category not in wanted:
+        wanted.append(category)
+    passes = topic_filter(wanted, mode, hide)
     try:
         with open(users.path(DIGEST_FILE), 'r', encoding='utf-8') as fh:
             digest = json.load(fh)
@@ -639,7 +684,7 @@ def ranked_articles(category='all', offset=0, limit=20, exclude=None):
         cid = a.get('cluster_id') or a['id']
         if a['id'] in read or a['id'] in later or cid in hidden_clusters:
             continue
-        if category and category != 'all' and a.get('category') != category:
+        if not passes(a):
             continue
         cur = reps.get(cid)
         if cur is None or (a.get('cluster_rep') and not cur.get('cluster_rep')):
@@ -1293,7 +1338,15 @@ class StateHandler(BaseHTTPRequestHandler):
                 if len(exclude) > 5000:
                     self._json(400, {'error': 'Too many excluded ids'})
                     return
-            self._json(200, ranked_articles(q1('category', 'all')[:40], offset, limit, exclude))
+            def keys(name):
+                vals = [v.strip().lower() for v in ','.join(qs.get(name) or []).split(',')]
+                return [v[:40] for v in vals if v][:50]
+            mode = q1('mode', 'any')
+            if mode not in ('any', 'all'):
+                self._json(400, {'error': 'mode must be any or all'})
+                return
+            self._json(200, ranked_articles(q1('category', 'all')[:40], offset, limit, exclude,
+                                            topics=keys('topics'), mode=mode, hide=keys('hide')))
             return
         m = _FALLBACK_RE.match(path)
         if m:
@@ -1334,6 +1387,9 @@ class StateHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._json(400, {'error': str(exc)})
                 return
+            # Re-file the stored digest under the new list right away (embedding
+            # only, in the background) instead of waiting for the next run.
+            pipeline.retag_digest_async()
             self._json(200, cats)
             return
         if path != '/state':

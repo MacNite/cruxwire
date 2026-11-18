@@ -76,6 +76,10 @@ CATEGORY_TOPIC = {
     'world': 'world', 'politics': 'world', 'news': 'general', 'general': 'general',
     'health': 'health', 'sports': 'sports', 'sport': 'sports', 'gaming': 'gaming',
     'music': 'culture', 'photography': 'culture', 'woodworking': 'culture', 'culture': 'culture',
+    'economics': 'business', 'markets': 'business', 'geopolitics': 'world',
+    'videogames': 'gaming', 'games': 'gaming', 'boardgames': 'culture', 'tabletop': 'culture',
+    'hardware': 'technology', 'software': 'technology', 'security': 'technology',
+    'itsec': 'technology', 'infosec': 'technology', 'cybersecurity': 'technology',
 }
 
 
